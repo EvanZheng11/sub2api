@@ -6500,7 +6500,7 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 	normalized := body
 	changed := false
 
-	for _, field := range openAIChatGPTInternalUnsupportedFields {
+	for _, field := range openAICodexOAuthUnsupportedFields {
 		if value := gjson.GetBytes(normalized, field); !value.Exists() {
 			continue
 		}
