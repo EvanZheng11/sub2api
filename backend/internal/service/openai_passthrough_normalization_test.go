@@ -20,6 +20,22 @@ func TestNormalizeOpenAIPassthroughOAuthBody_RemovesUnsupportedUser(t *testing.T
 	require.False(t, gjson.GetBytes(normalized, "store").Bool())
 }
 
+func TestNormalizeOpenAIPassthroughOAuthBody_RemovesUnsupportedSamplingAndTokenFields(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","input":"hello","max_output_tokens":128,"max_completion_tokens":128,"temperature":0.2,"top_p":0.8,"frequency_penalty":0.1,"presence_penalty":0.1}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(normalized, "max_output_tokens").Exists())
+	require.False(t, gjson.GetBytes(normalized, "max_completion_tokens").Exists())
+	require.False(t, gjson.GetBytes(normalized, "temperature").Exists())
+	require.False(t, gjson.GetBytes(normalized, "top_p").Exists())
+	require.False(t, gjson.GetBytes(normalized, "frequency_penalty").Exists())
+	require.False(t, gjson.GetBytes(normalized, "presence_penalty").Exists())
+	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
+	require.False(t, gjson.GetBytes(normalized, "store").Bool())
+}
+
 func TestNormalizeOpenAIPassthroughOAuthBody_CompactRemovesUnsupportedUser(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","input":"hello","user":"user_123","metadata":{"user_id":"user_123"},"stream":true,"store":true}`)
 
