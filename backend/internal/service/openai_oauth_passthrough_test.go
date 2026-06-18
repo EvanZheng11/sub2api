@@ -433,6 +433,98 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamKeepsToolNameAndBodyNormali
 	require.NotContains(t, body, "\"name\":\"edit\"")
 }
 
+func TestOpenAIGatewayService_OAuthPassthrough_MissingInstructionsInjectsDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "opencode/1.17.8 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14")
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	originalBody := []byte(`{"model":"gpt-5.4","stream":true,"store":true,"input":[{"type":"text","text":"hi"}]}`)
+
+	upstreamSSE := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:             123,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, defaultCodexSynthInstructions("gpt-5.4"), strings.TrimSpace(gjson.GetBytes(upstream.lastBody, "instructions").String()))
+	require.Equal(t, false, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.Equal(t, true, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_ExistingInstructionsArePreserved(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "opencode/1.17.8 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14")
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	originalBody := []byte(`{"model":"gpt-5.5","stream":true,"store":true,"instructions":"keep-me","input":[{"type":"text","text":"hi"}]}`)
+
+	upstreamSSE := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:             123,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "keep-me", strings.TrimSpace(gjson.GetBytes(upstream.lastBody, "instructions").String()))
+}
+
 func TestOpenAIGatewayService_OAuthPassthrough_NamespaceRequestAndStreamResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
