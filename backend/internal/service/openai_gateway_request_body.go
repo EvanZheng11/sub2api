@@ -563,7 +563,7 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 	normalized := body
 	changed := false
 
-	for _, field := range openAIChatGPTInternalUnsupportedFields {
+	for _, field := range openAICodexOAuthUnsupportedFields {
 		if value := gjson.GetBytes(normalized, field); !value.Exists() {
 			continue
 		}
@@ -631,6 +631,23 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 		return "instructions_empty"
 	}
 	return ""
+}
+
+func ensureOpenAIPassthroughInstructions(body []byte, reqModel string) ([]byte, bool, error) {
+	instructions := gjson.GetBytes(body, "instructions")
+	if instructions.Exists() && instructions.Type == gjson.String && strings.TrimSpace(instructions.String()) != "" {
+		return body, false, nil
+	}
+
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		model = strings.TrimSpace(reqModel)
+	}
+	next, err := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(model))
+	if err != nil {
+		return body, false, fmt.Errorf("normalize passthrough body instructions: %w", err)
+	}
+	return next, true, nil
 }
 
 // extractOpenAIReasoningEffortFromBody 按优先级传入模型候选（如 upstreamModel,
