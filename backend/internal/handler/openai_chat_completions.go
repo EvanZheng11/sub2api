@@ -268,7 +268,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		// #5148 对齐：错误返回携带的部分 result（流中断前上游已计量的 usage）照常
 		// 入账；failover 错误恒定 result=nil，不会重复计费。
 		submitChatUsage := func(res *service.OpenAIForwardResult) {
-			if res == nil {
+			if !shouldRecordChatUsage(res, err != nil) {
+				if res != nil && err != nil {
+					reqLog.Info("openai_chat_completions.failed_usage_unavailable", zap.Int64("account_id", account.ID))
+				}
 				return
 			}
 			stampOpenAIRequestedReasoningEffort(res, c)
@@ -410,6 +413,22 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func shouldRecordChatUsage(res *service.OpenAIForwardResult, failed bool) bool {
+	if res == nil {
+		return false
+	}
+	if !failed {
+		return true
+	}
+	// A failed stream without measured usage belongs in error logs, not success usage records.
+	u := res.Usage
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadInputTokens > 0 ||
+		u.CacheCreationInputTokens > 0 || u.ImageInputTokens > 0 || u.ImageOutputTokens > 0 ||
+		u.ImageCacheReadTokens > 0 || res.ImageCount > 0 || res.VideoCount > 0 ||
+		res.WebSearchCalls > 0 || res.SearchCount > 0 ||
+		(res.AudioUsage != nil && res.AudioUsage.DurationOrUnits > 0)
 }
 
 // resolveOpenAIUpstreamEndpoint returns the actual upstream endpoint for an

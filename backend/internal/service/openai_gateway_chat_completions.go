@@ -840,6 +840,12 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 			message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payloadBytes, message)
 			defaultStatus, defaultErrType, defaultMsg := http.StatusBadGateway, "upstream_error", message
+			for _, path := range []string{"response.error.status_code", "error.status_code", "status_code", "response.error.status", "error.status"} {
+				if status := int(gjson.GetBytes(payloadBytes, path).Int()); status >= 400 && status <= 599 {
+					defaultStatus = status
+					break
+				}
+			}
 			// 统一走语义状态推断 + body 归一化（与 /v1/responses 路径一致），
 			// 使按错误码配置的透传规则可命中。
 			if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(
@@ -853,8 +859,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 			errorPayload, _ := json.Marshal(gin.H{
 				"error": gin.H{
-					"type":    defaultErrType,
-					"message": defaultMsg,
+					"type":        defaultErrType,
+					"message":     defaultMsg,
+					"code":        openAIStreamFailedEventErrorCode(payloadBytes),
+					"status_code": defaultStatus,
 				},
 			})
 			if c != nil && c.Writer != nil && !c.Writer.Written() {

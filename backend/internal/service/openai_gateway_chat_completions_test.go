@@ -596,7 +596,7 @@ func TestForwardAsChatCompletions_StreamBareErrorAfterOutputDoesNotFailOver(t *t
 		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial"}`,
 		"",
 		`event: error`,
-		`data: {"type":"error","error":{"type":"server_error","code":"server_error","message":"temporary upstream failure"}}`,
+		`data: {"type":"error","error":{"type":"server_error","code":"server_error","status_code":503,"message":"temporary upstream failure"}}`,
 		"",
 		`data: [DONE]`,
 		"",
@@ -620,6 +620,8 @@ func TestForwardAsChatCompletions_StreamBareErrorAfterOutputDoesNotFailOver(t *t
 	require.False(t, errors.As(err, &failoverErr))
 	require.Contains(t, rec.Body.String(), "partial")
 	require.Contains(t, rec.Body.String(), "temporary upstream failure")
+	require.Contains(t, rec.Body.String(), `"code":"server_error"`)
+	require.Contains(t, rec.Body.String(), `"status_code":503`)
 	require.NotContains(t, rec.Body.String(), "[DONE]")
 }
 

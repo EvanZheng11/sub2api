@@ -852,8 +852,38 @@ func isOpsTerminalSSEFrame(frame []byte) bool {
 	var event struct {
 		Type string `json:"type"`
 	}
-	return json.Unmarshal(payload, &event) == nil &&
-		(event.Type == "response.failed" || event.Type == "error")
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return false
+	}
+	if event.Type == "response.failed" || event.Type == "error" {
+		return true
+	}
+	if event.Type != "" || len(eventType) > 0 {
+		return false
+	}
+	// Bare error frame: no event line and no top-level type. A valid error
+	// object carries the terminal signal on its own.
+	var generic map[string]any
+	if json.Unmarshal(payload, &generic) != nil {
+		return false
+	}
+	return opsSSEFrameIsBareError(generic)
+}
+
+// opsSSEValidErrorObject reports whether an error object carries a real
+// terminal signal: at least one non-empty message, code, or type field.
+// error: null and error: {} never mark a stream as failed.
+func opsSSEValidErrorObject(errObj map[string]any) bool {
+	if len(errObj) == 0 {
+		return false
+	}
+	if msg, _ := errObj["message"].(string); strings.TrimSpace(msg) != "" {
+		return true
+	}
+	if typ, _ := errObj["type"].(string); strings.TrimSpace(typ) != "" {
+		return true
+	}
+	return opsJSONScalarString(errObj["code"]) != ""
 }
 
 func parseOpsSSEFrameEnvelope(frame []byte) ([]byte, []byte) {
@@ -1003,8 +1033,10 @@ func mayContainOpsTerminalSSE(chunk []byte) bool {
 	if bytes.Contains(chunk, []byte("response.failed")) {
 		return true
 	}
-	return bytes.Contains(chunk, []byte("error")) &&
-		(bytes.Contains(chunk, []byte("event")) || bytes.Contains(chunk, []byte(`"type"`)))
+	// Bare error frames (data: {"error":{...}} with no event line and no
+	// top-level type) are terminal too, so any "error" byte sequence must
+	// reach the frame parser instead of being skipped as a successful frame.
+	return bytes.Contains(chunk, []byte("error"))
 }
 
 func isOpsTerminalSSEEventLine(line []byte) bool {
@@ -1893,7 +1925,7 @@ func parseOpsSSEFailure(body []byte) (parsedOpsError, bool) {
 				eventType, _ = event["type"].(string)
 			}
 		}
-		if eventType != "response.failed" && eventType != "error" {
+		if eventType != "response.failed" && eventType != "error" && !(eventType == "" && opsSSEFrameIsBareError(event)) {
 			continue
 		}
 
@@ -1956,6 +1988,23 @@ func parseOpsSSEFailure(body []byte) (parsedOpsError, bool) {
 		return *errorCandidate, true
 	}
 	return parsedOpsError{}, false
+}
+
+// opsSSEFrameIsBareError reports whether an untyped SSE payload is a bare
+// error frame: no event line, no top-level type, and a valid top-level
+// error object such as {"error":{"type":"upstream_error","message":"..."}}.
+func opsSSEFrameIsBareError(event map[string]any) bool {
+	if event == nil {
+		return false
+	}
+	if typ, _ := event["type"].(string); strings.TrimSpace(typ) != "" {
+		return false
+	}
+	errObj, ok := event["error"].(map[string]any)
+	if !ok {
+		return false
+	}
+	return opsSSEValidErrorObject(errObj)
 }
 
 func opsSSEErrorObject(event map[string]any) map[string]any {
@@ -2028,7 +2077,7 @@ func sanitizeOpsSSEDataForPersistence(body []byte) string {
 
 func inferResponsesFailedOpsErrorType(code string) string {
 	switch strings.TrimSpace(code) {
-	case "rate_limit_exceeded":
+	case "rate_limit_exceeded", "429":
 		return "rate_limit_error"
 	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy":
 		return "permission_error"

@@ -2168,3 +2168,126 @@ func TestNormalizeOpsErrorType_KeepsGeminiInBandSignalTypes(t *testing.T) {
 		require.Equal(t, errType, normalizeOpsErrorType(errType, "PROHIBITED_CONTENT"), errType)
 	}
 }
+
+func TestIsOpsTerminalSSEFrame_BareErrorObjectFrames(t *testing.T) {
+	require.True(t, isOpsTerminalSSEFrame([]byte("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"broken\",\"status_code\":502}}\n\n")))
+	require.True(t, isOpsTerminalSSEFrame([]byte("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"broken\",\"status_code\":502}}\r\n\r\n")))
+	require.False(t, isOpsTerminalSSEFrame([]byte("data: {\"error\":null}\n\n")))
+	require.False(t, isOpsTerminalSSEFrame([]byte("data: {\"error\":{}}\n\n")))
+	require.False(t, isOpsTerminalSSEFrame([]byte("event: progress\ndata: {\"error\":{\"message\":\"historical error\"}}\n\n")))
+	require.False(t, isOpsTerminalSSEFrame([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"error\"}}]}\n\n")))
+}
+
+func TestParseOpsSSEFailure_BareErrorObjectFrames(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantFailure bool
+		wantType    string
+		wantMessage string
+		wantStatus  int
+	}{
+		{
+			name:        "bare error object without event or top-level type",
+			body:        "data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"broken\",\"status_code\":502}}\n\n",
+			wantFailure: true,
+			wantType:    "upstream_error",
+			wantMessage: "broken",
+			wantStatus:  http.StatusBadGateway,
+		},
+		{
+			name:        "bare error object with CRLF separators",
+			body:        "data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"broken\",\"status_code\":502}}\r\n\r\n",
+			wantFailure: true,
+			wantType:    "upstream_error",
+			wantMessage: "broken",
+			wantStatus:  http.StatusBadGateway,
+		},
+		{
+			name:        "null error object is not terminal",
+			body:        "data: {\"error\":null}\n\n",
+			wantFailure: false,
+		},
+		{
+			name:        "empty error object is not terminal",
+			body:        "data: {\"error\":{}}\n\n",
+			wantFailure: false,
+		},
+		{
+			name:        "nested delta error text is not terminal",
+			body:        "data: {\"choices\":[{\"delta\":{\"content\":\"error\"}}]}\n\n",
+			wantFailure: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed := parseOpsErrorResponse([]byte(tt.body))
+			require.Equal(t, tt.wantFailure, parsed.StreamFailure)
+			if !tt.wantFailure {
+				return
+			}
+			require.Equal(t, tt.wantType, parsed.ErrorType)
+			require.Equal(t, tt.wantMessage, parsed.Message)
+			require.Equal(t, tt.wantStatus, inferStreamFailureStatus(nil, parsed))
+		})
+	}
+}
+
+func TestOpsCaptureWriter_BareErrorFrameAfterLargeBody(t *testing.T) {
+	state := &opsCaptureWriterState{limit: opsCaptureWriterLimit}
+	state.captureResponseChunk([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\""+strings.Repeat("x", opsTerminalSSEFrameProbeLimit*2)+"\"}\n\n"), http.StatusOK)
+	require.False(t, state.sseCapturing)
+
+	state.captureResponseChunk([]byte("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"broken\",\"status_code\":502}}\r\n\r\n"), http.StatusOK)
+
+	require.True(t, state.sseCapturing)
+	require.True(t, state.terminalFound)
+	require.Equal(t, "upstream_error", state.terminalError.ErrorType)
+	require.Equal(t, "broken", state.terminalError.Message)
+	require.Equal(t, http.StatusBadGateway, state.terminalError.StatusCode)
+
+	parsed := parseOpsErrorResponse(state.buf.Bytes())
+	require.True(t, parsed.StreamFailure, "large preceding body must not hide the bare terminal error frame")
+	require.Equal(t, "upstream_error", parsed.ErrorType)
+	require.Equal(t, 502, parsed.StatusCode)
+}
+
+func TestOpsCaptureWriter_BareErrorFrameEverySplit(t *testing.T) {
+	frame := "data: {\"error\":{\"message\":\"broken\",\"status_code\":502}}\r\n\r\n"
+	for split := 1; split < len(frame); split++ {
+		state := &opsCaptureWriterState{limit: opsCaptureWriterLimit}
+		state.captureResponseChunk([]byte(frame[:split]), http.StatusOK)
+		state.captureResponseChunk([]byte(frame[split:]), http.StatusOK)
+		require.True(t, state.terminalFound, "split=%d", split)
+		require.Equal(t, http.StatusBadGateway, state.terminalError.StatusCode)
+	}
+}
+
+func TestOpsErrorLoggerMiddleware_BareErrorFrameNotRecovered(t *testing.T) {
+	setupOpsErrorLogTestQueue(t, 2)
+	gin.SetMode(gin.TestMode)
+
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.Use(OpsErrorLoggerMiddleware(ops))
+	router.POST("/v1/responses", func(c *gin.Context) {
+		setOpsRequestContext(c, "gpt-5", true)
+		c.Status(http.StatusOK)
+		for i := 0; i < 64; i++ {
+			_, _ = c.Writer.WriteString("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		}
+		_, _ = c.Writer.WriteString("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"broken\",\"status_code\":502}}\r\n\r\n")
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, int64(1), OpsErrorLogQueueLength())
+	job := <-opsErrorLogQueue
+	require.NotContains(t, job.entry.ErrorMessage, "Recovered", "bare terminal error frames must be recorded as stream failures")
+	require.Equal(t, http.StatusBadGateway, job.entry.StatusCode)
+	require.Equal(t, "upstream_error", job.entry.ErrorType)
+	require.Equal(t, "broken", job.entry.ErrorMessage)
+	require.NotNil(t, job.entry.UpstreamStatusCode)
+	require.Equal(t, http.StatusBadGateway, *job.entry.UpstreamStatusCode)
+}
