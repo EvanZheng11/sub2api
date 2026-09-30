@@ -14,6 +14,9 @@ func resolveOpenAIForwardModel(account *Account, requestedModel, messagesDispatc
 		return requestedModel
 	}
 
+	if account.IsOpenCodeGo() {
+		return resolveOpenCodeGoForwardModel(account, requestedModel)
+	}
 	mappedModel, matched := account.ResolveMappedModel(requestedModel)
 	if !matched && messagesDispatchMappedModel != "" {
 		return messagesDispatchMappedModel

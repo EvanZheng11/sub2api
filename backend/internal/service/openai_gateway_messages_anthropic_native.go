@@ -125,6 +125,13 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 // nativeAnthropicTargetURL 组装国产供应商原生 Anthropic messages 端点。
 // 第三方端点保持朴素路径，不附加 ?beta=true。
 func (s *OpenAIGatewayService) nativeAnthropicTargetURL(account *Account) (string, error) {
+	if account.IsOpenCodeGo() {
+		baseURL, err := s.openCodeGoForwardBaseURL(account, APIProtocolAnthropic)
+		if err != nil {
+			return "", err
+		}
+		return buildOpenAIEndpointURL(baseURL, "/v1/messages"), nil
+	}
 	baseURL := strings.TrimSpace(account.GetAnthropicProtocolBaseURL())
 	if baseURL == "" {
 		return "", fmt.Errorf("account %d has no anthropic protocol base url", account.ID)
@@ -132,10 +139,6 @@ func (s *OpenAIGatewayService) nativeAnthropicTargetURL(account *Account) (strin
 	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid base_url: %w", err)
-	}
-	if account.IsOpenCodeGo() {
-		// OpenCode Go 的 Chat Completions base 带 /v1；用版本感知拼接避免 /v1/v1/messages。
-		return buildOpenAIEndpointURL(validatedURL, "/v1/messages"), nil
 	}
 	return strings.TrimRight(validatedURL, "/") + "/v1/messages", nil
 }
