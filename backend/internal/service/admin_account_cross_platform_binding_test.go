@@ -209,3 +209,41 @@ func TestAdminService_CheckMixedChannelRiskEndpointStillReturnsConflict(t *testi
 	require.Equal(t, "Anthropic", mixedErr.OtherPlatform)
 	require.True(t, strings.Contains(err.Error(), "mixed_channel_warning"))
 }
+
+// TestAdminService_CreateAccount_MixedRiskGroupGetByIDErrorFailsBeforeWrite 证明
+// 混合渠道风险存在时，若审计日志字段所需的分组信息获取失败（DB/上下文错误），
+// 该基础设施错误必须显式传播，创建与绑定写入不得执行，也不得记录放行审计日志。
+func TestAdminService_CreateAccount_MixedRiskGroupGetByIDErrorFailsBeforeWrite(t *testing.T) {
+	buf := captureSlogForBindingTest(t)
+	accountRepo := &accountRepoStubForBulkUpdate{
+		listByGroupData: mixedChannelMembersByGroup(),
+	}
+	svc := &adminServiceImpl{
+		accountRepo: accountRepo,
+		groupRepo: &groupRepoStubForAdmin{
+			getByIDByID: map[int64]*Group{
+				10: {ID: 10, Name: "openai-group", Platform: PlatformOpenAI},
+			},
+			getErr: context.DeadlineExceeded,
+		},
+	}
+
+	account, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:                 "antigravity account",
+		Platform:             PlatformAntigravity,
+		Type:                 AccountTypeAPIKey,
+		Concurrency:          1,
+		GroupIDs:             []int64{10},
+		SkipDefaultGroupBind: true,
+	})
+
+	require.Nil(t, account)
+	// 保留错误链：外层中文上下文包裹原始上下文错误。
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Contains(t, err.Error(), "获取分组 10")
+	// 基础设施错误必须先于任何写操作失败。
+	require.Nil(t, accountRepo.createAccount)
+	require.Empty(t, accountRepo.bindGroupsByAccount)
+	// 错误路径不得记录放行审计日志。
+	require.NotContains(t, buf.String(), "已放行保存")
+}

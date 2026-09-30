@@ -1554,7 +1554,12 @@ func (s *adminServiceImpl) checkMixedChannelRisk(ctx context.Context, currentAcc
 
 			// 检测混合渠道
 			if currentPlatform != otherPlatform {
-				group, _ := s.groupRepo.GetByID(ctx, groupID)
+				// 分组信息用于审计日志字段，获取失败属于基础设施错误，
+				// 必须显式传播给调用方（保留错误链），不得吞掉后放行。
+				group, err := s.groupRepo.GetByID(ctx, groupID)
+				if err != nil {
+					return fmt.Errorf("获取分组 %d 信息用于混合渠道风险审计: %w", groupID, err)
+				}
 				groupName := fmt.Sprintf("Group %d", groupID)
 				if group != nil {
 					groupName = group.Name
