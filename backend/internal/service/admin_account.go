@@ -508,9 +508,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
-	// 检查混合渠道风险（除非用户已确认）
+	// 检查混合渠道风险（除非用户已确认）：跨平台绑定必须成功，风险仅记录审计日志不再阻断
 	if len(groupIDs) > 0 && !input.SkipMixedChannelCheck {
-		if err := s.checkMixedChannelRisk(ctx, 0, input.Platform, groupIDs); err != nil {
+		if err := s.auditMixedChannelRisk(ctx, 0, input.Platform, groupIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -847,9 +847,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 
-		// 检查混合渠道风险（除非用户已确认）
+		// 检查混合渠道风险（除非用户已确认）：跨平台绑定必须成功，风险仅记录审计日志不再阻断
 		if !input.SkipMixedChannelCheck {
-			if err := s.checkMixedChannelRisk(ctx, account.ID, account.Platform, *input.GroupIDs); err != nil {
+			if err := s.auditMixedChannelRisk(ctx, account.ID, account.Platform, *input.GroupIDs); err != nil {
 				return nil, err
 			}
 		}
@@ -1058,14 +1058,15 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	// 预检查混合渠道风险：在任何写操作之前，若发现风险立即返回错误。
+	// 预检查混合渠道风险：在任何写操作之前扫描。跨平台绑定必须成功，风险仅记录
+	// 审计日志不再阻断；仓储读写等基础设施错误仍返回。
 	if needMixedChannelCheck {
 		for _, accountID := range input.AccountIDs {
 			platform := platformByID[accountID]
 			if platform == "" {
 				continue
 			}
-			if err := s.checkMixedChannelRisk(ctx, accountID, platform, *input.GroupIDs); err != nil {
+			if err := s.auditMixedChannelRisk(ctx, accountID, platform, *input.GroupIDs); err != nil {
 				return nil, err
 			}
 		}
@@ -1498,6 +1499,28 @@ func propagateAccountProxyToShadows(ctx context.Context, repo AccountRepository,
 			return fmt.Errorf("update spark shadow %d proxy: %w", shadow.ID, err)
 		}
 	}
+	return nil
+}
+
+// auditMixedChannelRisk 在账号创建/更新/绑定保存路径上执行混合渠道扫描：
+// 发现混合渠道风险时记录中文结构化 slog.Warn 审计日志（仅含账号/分组标识与平台，
+// 不记录任何凭据），不再阻断跨平台绑定保存；仓储读写等基础设施错误仍返回给调用方。
+// 只读检查端点 CheckMixedChannelRisk 仍走 checkMixedChannelRisk 返回风险错误。
+func (s *adminServiceImpl) auditMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error {
+	err := s.checkMixedChannelRisk(ctx, currentAccountID, currentAccountPlatform, groupIDs)
+	if err == nil {
+		return nil
+	}
+	var mixedErr *MixedChannelError
+	if !errors.As(err, &mixedErr) {
+		return err
+	}
+	slog.Warn("跨平台账号绑定存在混合渠道风险，已放行保存",
+		"account_id", currentAccountID,
+		"group_id", mixedErr.GroupID,
+		"account_platform", mixedErr.CurrentPlatform,
+		"group_platform", mixedErr.OtherPlatform,
+	)
 	return nil
 }
 
