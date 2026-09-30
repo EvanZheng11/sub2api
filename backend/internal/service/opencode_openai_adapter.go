@@ -44,17 +44,41 @@ func ensureOpenCodeGoForwardCredentials(account *Account) error {
 }
 
 func openCodeGoConfiguredBaseURL(account *Account, protocol string) string {
+	if account == nil {
+		return ""
+	}
+	if baseURL, present := openCodeGoExplicitBaseURL(account, protocol); present {
+		return baseURL
+	}
+	if baseURL := strings.TrimSpace(account.GetCredential("base_url")); baseURL != "" {
+		return baseURL
+	}
+	return strings.TrimSpace(account.GetCNProtocolBaseURL(protocol))
+}
+
+func openCodeGoExplicitBaseURL(account *Account, protocol string) (string, bool) {
 	switch values := account.Credentials["api_base_urls"].(type) {
 	case map[string]any:
-		if value, ok := values[protocol].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
+		value, present := values[protocol]
+		if !present {
+			return "", false
 		}
+		baseURL, ok := value.(string)
+		if !ok {
+			return "", true
+		}
+		baseURL = strings.TrimSpace(baseURL)
+		return baseURL, baseURL != ""
 	case map[string]string:
-		if value := strings.TrimSpace(values[protocol]); value != "" {
-			return value
+		baseURL, present := values[protocol]
+		if !present {
+			return "", false
 		}
+		baseURL = strings.TrimSpace(baseURL)
+		return baseURL, baseURL != ""
+	default:
+		return "", false
 	}
-	return strings.TrimSpace(account.GetCredential("base_url"))
 }
 
 // 保留已有带前缀的精确映射；未命中时按去前缀模型查账号映射。

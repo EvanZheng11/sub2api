@@ -61,9 +61,7 @@ func TestEnsureOpenCodeGoForwardCredentials(t *testing.T) {
 	noURL := openCodeMappedTestAccount()
 	delete(noURL.Credentials, "base_url")
 	delete(noURL.Credentials, "api_base_urls")
-	err = ensureOpenCodeGoForwardCredentials(noURL)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "base_url")
+	require.NoError(t, ensureOpenCodeGoForwardCredentials(noURL))
 
 	oauth := openCodeMappedTestAccount()
 	oauth.Type = AccountTypeOAuth
@@ -336,7 +334,7 @@ func TestOpenCodeAdapterInvalidConfigurationDoesNotSend(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	defer slog.SetDefault(originalLogger)
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses"} {
-		for _, reason := range []string{"缺密钥", "缺地址", "缺目标协议地址", "地址含凭据", "地址无效", "协议地址无效", "非APIKey", "类型错误的地址"} {
+		for _, reason := range []string{"缺密钥", "地址含凭据", "地址无效", "协议地址无效", "非APIKey", "类型错误的地址"} {
 			t.Run(path+"/"+reason, func(t *testing.T) {
 				account := openCodeMappedTestAccount()
 				account.Credentials["api_protocol"] = APIProtocolResponses
@@ -344,12 +342,6 @@ func TestOpenCodeAdapterInvalidConfigurationDoesNotSend(t *testing.T) {
 				switch reason {
 				case "缺密钥":
 					account.Credentials["api_key"] = "  "
-				case "缺地址":
-					delete(account.Credentials, "base_url")
-					delete(account.Credentials, "api_base_urls")
-				case "缺目标协议地址":
-					delete(account.Credentials, "base_url")
-					account.Credentials["api_base_urls"] = map[string]any{APIProtocolChatCompletions: "https://unused.example"}
 				case "地址含凭据":
 					account.Credentials["api_base_urls"] = map[string]any{APIProtocolResponses: "https://user:地址密钥禁止泄露@upstream.example/v1?api_key=查询密钥禁止泄露"}
 				case "地址无效":
