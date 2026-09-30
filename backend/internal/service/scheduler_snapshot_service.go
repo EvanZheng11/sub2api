@@ -1480,7 +1480,12 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		var accounts []Account
 		var err error
 		if groupID > 0 {
-			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, groupID, platforms)
+			// 绑定维度查询（设计 §3.3）：与 listSchedulableAccounts 直查路径一致，
+			// 分组候选集由 account_groups 绑定关系决定，平台能力改由内存能力矩阵判定。
+			accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, groupID)
+			if err == nil {
+				accounts = filterAccountsByBindingCapability(accounts, bucket.Platform)
+			}
 		} else if s.isRunModeSimple() {
 			accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, platforms)
 		} else {
@@ -1489,6 +1494,10 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		if err != nil {
 			return nil, err
 		}
+		if groupID > 0 {
+			return accounts, nil
+		}
+		// 无分组快照没有绑定关系，保持既有平台过滤语义。
 		filtered := make([]Account, 0, len(accounts))
 		for _, acc := range accounts {
 			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
@@ -1500,7 +1509,13 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 	}
 
 	if groupID > 0 {
-		return s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, bucket.Platform)
+		// 绑定维度查询（设计 §3.3）：与 listSchedulableAccounts 直查路径保持一致，
+		// 桶键（GroupID×Platform×Mode）不变，桶内候选改由能力矩阵在内存过滤。
+		accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		return filterAccountsByBindingCapability(accounts, bucket.Platform), nil
 	}
 	if s.isRunModeSimple() {
 		return s.accountRepo.ListSchedulableByPlatform(ctx, bucket.Platform)

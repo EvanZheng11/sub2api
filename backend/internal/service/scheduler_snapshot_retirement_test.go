@@ -152,7 +152,8 @@ func TestSchedulerFullRebuildCapturesAllRegistryTokensBeforeDBLoad(t *testing.T)
 	releaseDB := make(chan struct{})
 	var firstDB sync.Once
 	repo := &mockAccountRepoForPlatform{
-		listPlatformFunc: func(context.Context, string) ([]Account, error) {
+		// 绑定维度查询（设计 §3.3）：分组桶走 ListSchedulableByGroupID。
+		groupSchedulableFunc: func(context.Context, int64) ([]Account, error) {
 			firstDB.Do(func() {
 				close(dbStarted)
 				<-releaseDB
@@ -202,7 +203,9 @@ func TestSchedulerRebuildRetireAfterDBLoadFencesPublish(t *testing.T) {
 		<-releaseSet
 	}
 	repo := &mockAccountRepoForPlatform{
-		listPlatformFunc: func(context.Context, string) ([]Account, error) {
+		// 绑定维度查询（设计 §3.3）：分组桶走 ListSchedulableByGroupID，
+		// 由 groupSchedulableFunc 提供候选并在首次调用时发出 DB load 信号。
+		groupSchedulableFunc: func(_ context.Context, _ int64) ([]Account, error) {
 			close(dbReturned)
 			return []Account{{ID: 6201, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}}, nil
 		},

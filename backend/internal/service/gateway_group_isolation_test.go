@@ -130,6 +130,18 @@ func (m *groupAwareMockAccountRepo) ListSchedulableUngroupedByPlatforms(ctx cont
 	return result, nil
 }
 
+// ListSchedulableByGroupID 绑定维度语义（设计 §3.3）：按 account_groups 绑定关系
+// 返回分组候选，不再按账号平台过滤，平台能力由调度层能力矩阵在内存判定。
+func (m *groupAwareMockAccountRepo) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
+	var result []Account
+	for _, acc := range m.allAccounts {
+		if acc.IsSchedulable() && accountBelongsToGroup(acc, groupID) {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
 // ListSchedulableByGroupIDAndPlatform 返回属于指定分组的账号
 func (m *groupAwareMockAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	var result []Account

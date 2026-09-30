@@ -24,7 +24,10 @@ type mockAccountRepoForPlatform struct {
 	accounts         []Account
 	accountsByID     map[int64]*Account
 	listPlatformFunc func(ctx context.Context, platform string) ([]Account, error)
-	getByIDCalls     int
+	// groupSchedulableFunc 覆盖 ListSchedulableByGroupID 的绑定维度查询结果；
+	// 未设置时按 fixtures 的 account_groups 绑定关系返回。
+	groupSchedulableFunc func(ctx context.Context, groupID int64) ([]Account, error)
+	getByIDCalls         int
 }
 
 func (m *mockAccountRepoForPlatform) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -131,8 +134,26 @@ func (m *mockAccountRepoForPlatform) BindGroups(ctx context.Context, accountID i
 func (m *mockAccountRepoForPlatform) ListSchedulable(ctx context.Context) ([]Account, error) {
 	return nil, nil
 }
+
+// ListSchedulableByGroupID 绑定维度语义（设计 §3.3）：分组候选按 account_groups
+// 绑定关系返回，不再按账号平台过滤，平台能力由调度层能力矩阵在内存判定。
+// fixtures 未声明 AccountGroups 的账号沿用旧 mock 的隐式语义，视为绑定到被查询的
+// 分组；已声明绑定的账号必须命中该分组（跨分组账号不可见）。
 func (m *mockAccountRepoForPlatform) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
-	return nil, nil
+	if m.groupSchedulableFunc != nil {
+		return m.groupSchedulableFunc(ctx, groupID)
+	}
+	var result []Account
+	for _, acc := range m.accounts {
+		if !acc.IsSchedulable() {
+			continue
+		}
+		if len(acc.AccountGroups) > 0 && !accountBelongsToGroup(acc, groupID) {
+			continue
+		}
+		result = append(result, acc)
+	}
+	return result, nil
 }
 func (m *mockAccountRepoForPlatform) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]Account, error) {
 	var result []Account

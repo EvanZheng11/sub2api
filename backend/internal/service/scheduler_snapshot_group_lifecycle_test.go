@@ -296,6 +296,12 @@ func (r *groupLifecycleTestAccountRepo) load(ctx context.Context, platform strin
 	return []Account{{ID: 9001, Platform: platform, Status: StatusActive, Schedulable: true}}, nil
 }
 
+// ListSchedulableByGroupID 绑定维度查询（设计 §3.3）：分组候选只按绑定关系返回，
+// 不再按平台过滤；平台计数用 "" 占位（该分组共用的 canonical 查询）。
+func (r *groupLifecycleTestAccountRepo) ListSchedulableByGroupID(ctx context.Context, _ int64) ([]Account, error) {
+	return r.load(ctx, "")
+}
+
 func (r *groupLifecycleTestAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, _ int64, platform string) ([]Account, error) {
 	return r.load(ctx, platform)
 }
@@ -455,7 +461,8 @@ func TestSchedulerGroupLifecycleActiveReopensAndRebuildsAllCurrentBuckets(t *tes
 	require.Contains(t, bucketStrings(registered), historical.String())
 	require.Len(t, cache.tokens(), len(current))
 	require.Equal(t, schedulerCanonicalAccountQueryCount(), accounts.callCount())
-	require.Equal(t, 1, accounts.platformCallCount(PlatformOpenAI))
+	require.Equal(t, schedulerCanonicalAccountQueryCount(), accounts.platformCallCount(""),
+		"绑定维度下所有 canonical 桶共享按分组的绑定查询")
 	for _, bucket := range current {
 		_, published := cache.counts(bucket)
 		require.Equal(t, 1, published, bucket.String())

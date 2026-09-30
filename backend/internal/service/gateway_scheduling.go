@@ -225,6 +225,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	if len(accounts) == 0 {
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel); bindingErr != nil {
+			return nil, bindingErr
+		}
 		return nil, ErrNoAvailableAccounts
 	}
 	ctx = s.withWindowCostPrefetch(ctx, accounts)
@@ -702,6 +705,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				"total_accounts", len(accounts))
 			return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 		}
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel); bindingErr != nil {
+			return nil, bindingErr
+		}
 		return nil, ErrNoAvailableAccounts
 	}
 
@@ -1043,12 +1049,21 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		platforms := []string{platform, PlatformAntigravity}
 		var accounts []Account
 		var err error
+		rawCount := 0
 		if groupID != nil {
-			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, platforms)
+			// 绑定维度查询（设计 §3.3）：分组候选集由 account_groups 绑定关系决定，
+			// 不再按"账号平台 == 分组平台"做 SQL 过滤；平台能力改由内存能力矩阵判定。
+			accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
+			rawCount = len(accounts)
+			if err == nil {
+				accounts = filterAccountsByBindingCapability(accounts, platform)
+			}
 		} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 			accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, platforms)
+			rawCount = len(accounts)
 		} else {
 			accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, platforms)
+			rawCount = len(accounts)
 		}
 		if err != nil {
 			slog.Debug("account_scheduling_list_failed",
@@ -1057,17 +1072,22 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				"error", err)
 			return nil, useMixed, err
 		}
-		filtered := make([]Account, 0, len(accounts))
-		for _, acc := range accounts {
-			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
-				continue
+		filtered := accounts
+		if groupID == nil {
+			// 无分组 API key 没有绑定关系，保持既有平台过滤语义：
+			// antigravity 账号需开启 mixed_scheduling 才能参与混合调度。
+			filtered = make([]Account, 0, len(accounts))
+			for _, acc := range accounts {
+				if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+					continue
+				}
+				filtered = append(filtered, acc)
 			}
-			filtered = append(filtered, acc)
 		}
 		slog.Debug("account_scheduling_list_mixed",
 			"group_id", derefGroupID(groupID),
 			"platform", platform,
-			"raw_count", len(accounts),
+			"raw_count", rawCount,
 			"filtered_count", len(filtered))
 		if slog.Default().Enabled(ctx, slog.LevelDebug) {
 			for _, acc := range filtered {
@@ -1088,8 +1108,13 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
 	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
-		// 分组内无账号则返回空列表，由上层处理错误，不再回退到全平台查询
+		// 绑定维度查询（设计 §3.3）：候选集由 account_groups 绑定关系决定，不再按
+		// "账号平台 == 分组平台"做 SQL 过滤；平台能力改由内存能力矩阵判定。
+		accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
+		if err == nil {
+			accounts = filterAccountsByBindingCapability(accounts, platform)
+		}
+		// 分组内无候选则返回空列表，由上层处理错误，不再回退到全平台查询
 	} else {
 		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, platform)
 	}
@@ -1133,17 +1158,13 @@ func (s *GatewayService) IsSingleAntigravityAccountGroup(ctx context.Context, gr
 	return len(accounts) == 1
 }
 
+// isAccountAllowedForPlatform 候选资格判断（设计 §3.2/§3.3）：统一以绑定能力矩阵
+// 为准，useMixed 参数保留只是为了不改动既有调用点；antigravity 账号承接
+// anthropic/gemini 的开关语义已由 bindingCapabilityAllows 执行。
+// 行为变化：强制平台模式下开启了 mixed_scheduling 的 antigravity 账号、以及已注册
+// openai -> opencode_go 组合现在也可入选（能力矩阵显式支持项）。
 func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform string, useMixed bool) bool {
-	if account == nil {
-		return false
-	}
-	if useMixed {
-		if account.Platform == platform {
-			return true
-		}
-		return account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()
-	}
-	return account.Platform == platform
+	return bindingCapabilityAllows(platform, account)
 }
 
 func (s *GatewayService) isAccountSchedulableForSelection(account *Account) bool {
@@ -1922,7 +1943,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 						if clearSticky {
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
-						if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
+						if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && bindingCapabilityAllows(platform, account) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 							if s.debugModelRoutingEnabled() {
 								logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 							}
@@ -2044,7 +2065,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 					if clearSticky {
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
-					if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
+					if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && bindingCapabilityAllows(platform, account) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
 						return account, nil
 					}
 				}
@@ -2136,6 +2157,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 
 	if selected == nil {
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel); bindingErr != nil {
+			return nil, bindingErr
+		}
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, false)
 		if requestedModel != "" {
 			return nil, fmt.Errorf("%w supporting model: %s (%s)", ErrNoAvailableAccounts, requestedModel, summarizeSelectionFailureStats(stats))
@@ -2187,7 +2211,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
 						if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
-							if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+							if bindingCapabilityAllows(nativePlatform, account) {
 								if s.debugModelRoutingEnabled() {
 									logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 								}
@@ -2311,7 +2335,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
 					if !clearSticky && s.isGatewayAccountProfitEligible(ctx, account) && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
-						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+						if bindingCapabilityAllows(nativePlatform, account) {
 							return account, nil
 						}
 					}
@@ -2403,6 +2427,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	}
 
 	if selected == nil {
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, nativePlatform, requestedModel); bindingErr != nil {
+			return nil, bindingErr
+		}
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, nativePlatform, accounts, excludedIDs, true)
 		if requestedModel != "" {
 			return nil, fmt.Errorf("%w supporting model: %s (%s)", ErrNoAvailableAccounts, requestedModel, summarizeSelectionFailureStats(stats))
@@ -2438,6 +2465,65 @@ type selectionFailureStats struct {
 type selectionFailureDiagnosis struct {
 	Category string
 	Detail   string
+}
+
+// bindingUnsupportedSelectionError 在分组候选全部被绑定能力矩阵排除时，构造明确的
+// "分组平台 × 账号平台无适配器"错误（设计 §3.2/§6），并记录 binding_capability_unsupported
+// Warn 日志；返回 nil 表示失败原因不是绑定能力不匹配，调用方沿用既有错误文案与分类。
+//
+// 候选列表在查询阶段已按能力矩阵过滤，因此要报出被排除的账号平台，必须再按分组绑定关系
+// 回查一次。回查只发生在选号失败的路径上；无分组 API key 没有绑定关系，保持既有行为。
+func (s *GatewayService) bindingUnsupportedSelectionError(ctx context.Context, groupID *int64, platform, requestedModel string) error {
+	if s == nil || s.accountRepo == nil || groupID == nil {
+		return nil
+	}
+	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
+	if err != nil || len(accounts) == 0 {
+		return nil
+	}
+
+	allowed := 0
+	skipped := make([]string, 0, len(accounts))
+	seen := make(map[string]struct{}, len(accounts))
+	for i := range accounts {
+		acc := &accounts[i]
+		if bindingCapabilityAllows(platform, acc) {
+			allowed++
+			continue
+		}
+		if SupportsBinding(platform, acc.Platform, acc.GetAPIProtocol()) {
+			// 矩阵支持、仅账号级资格（如 mixed_scheduling 开关）不满足：
+			// 属于既有过滤语义，不是"无适配器"。
+			continue
+		}
+		normalized := normalizePlatformToken(acc.Platform)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		skipped = append(skipped, normalized)
+	}
+	if allowed > 0 || len(skipped) == 0 {
+		return nil
+	}
+	sort.Strings(skipped)
+	quoted := make([]string, 0, len(skipped))
+	for _, p := range skipped {
+		quoted = append(quoted, fmt.Sprintf("%q", p))
+	}
+
+	// 中文结构化 Warn：只记录分组、平台、模型等非敏感标识，绝不输出账号凭据。
+	slog.Warn("binding_capability_unsupported",
+		"group_id", derefGroupID(groupID),
+		"group_platform", platform,
+		"account_platform", strings.Join(skipped, ","),
+		"model", requestedModel)
+
+	return fmt.Errorf("%w: group platform %q has no adapter for account platform %s (model: %s)",
+		ErrNoAvailableAccounts, platform, strings.Join(quoted, ", "), requestedModel)
 }
 
 func (s *GatewayService) logDetailedSelectionFailure(
