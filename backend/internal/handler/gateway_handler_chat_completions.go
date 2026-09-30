@@ -271,7 +271,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
-		if groupPlatform == service.PlatformGemini && account.Platform != service.PlatformGemini {
+		if finalBindingCheckRejects(groupPlatform, account) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
@@ -426,4 +426,12 @@ func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *serv
 		return
 	}
 	h.chatCompletionsErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")
+}
+
+// finalBindingCheckRejects 是 chat_completions 转发前终检的绑定判定：
+// gemini 分组不再硬编码"账号平台必须为 gemini"，改用绑定能力矩阵统一判定——
+// antigravity 账号开启 mixed_scheduling 后可承接 gemini 分组，未注册的
+// 跨平台组合仍然跳过；非 gemini 分组维持原有行为（终检不做绑定拦截）。
+func finalBindingCheckRejects(groupPlatform string, account *service.Account) bool {
+	return groupPlatform == service.PlatformGemini && !service.BindingCapabilityAllows(groupPlatform, account)
 }

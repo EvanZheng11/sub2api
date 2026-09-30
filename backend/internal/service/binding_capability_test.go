@@ -167,3 +167,44 @@ func TestFilterAccountsByBindingCapability(t *testing.T) {
 		t.Fatalf("gemini 分组应仅保留 ID 2 的 antigravity 账号，实际保留：%+v", keptGemini)
 	}
 }
+
+// TestBindingCapabilityAllowsPublicWrapperGeminiFinalCheck 锁定 handler 转发前
+// 终检经公开包装 BindingCapabilityAllows 的判定契约：gemini 分组绑定
+// antigravity 且 mixed_scheduling=true 的账号放行（修复前 handler 硬编码跳过），
+// 未注册跨平台组合仍拒绝。
+func TestBindingCapabilityAllowsPublicWrapperGeminiFinalCheck(t *testing.T) {
+	mixedOn := &Account{Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": true}}
+	mixedOff := &Account{Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": false}}
+
+	cases := []struct {
+		name          string
+		groupPlatform string
+		account       *Account
+		want          bool
+	}{
+		{"gemini 分组 + gemini 账号放行", PlatformGemini, &Account{Platform: PlatformGemini}, true},
+		{"gemini 分组 + antigravity mixed 开启放行", PlatformGemini, mixedOn, true},
+		{"gemini 分组 + antigravity mixed 关闭拒绝", PlatformGemini, mixedOff, false},
+		{"gemini 分组 + 未注册平台拒绝", PlatformGemini, &Account{Platform: PlatformOpenAI}, false},
+		{"gemini 分组 + nil 账号拒绝", PlatformGemini, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BindingCapabilityAllows(tc.groupPlatform, tc.account)
+			if got != tc.want {
+				t.Fatalf("BindingCapabilityAllows(%q, {Platform:%q, mixed:%v}) = %v, want %v",
+					tc.groupPlatform, func() any {
+						if tc.account != nil {
+							return tc.account.Platform
+						}
+						return nil
+					}(), func() any {
+						if tc.account != nil && tc.account.Extra != nil {
+							return tc.account.Extra["mixed_scheduling"]
+						}
+						return nil
+					}(), got, tc.want)
+			}
+		})
+	}
+}

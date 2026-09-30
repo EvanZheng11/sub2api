@@ -83,3 +83,10 @@ func filterAccountsByBindingCapability(accounts []Account, platform string) []Ac
 	}
 	return kept
 }
+
+// BindingCapabilityAllows 是 bindingCapabilityAllows 的公开包装，供 handler
+// 转发前终检复用同一套"矩阵白名单 + 账号级 mixed_scheduling 资格"判定，
+// 避免在 handler 层重复硬编码平台匹配规则。
+func BindingCapabilityAllows(platform string, acc *Account) bool {
+	return bindingCapabilityAllows(platform, acc)
+}
