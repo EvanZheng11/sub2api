@@ -12,17 +12,24 @@ import (
 )
 
 // bindingSchedulingAccountRepo 是绑定维度调度的最小测试桩。
-// ListSchedulableByGroupID 返回分组绑定的全部账号且不做平台过滤，
-// 与 repository 的绑定维度查询语义一致（设计 §3.3）。
+// ListSchedulableByGroupID 严格按 account_groups 绑定关系返回分组候选且不做平台过滤，
+// 与 repository 的绑定维度查询语义一致（设计 §3.3）：未声明 AccountGroups 的账号
+// 不属于任何分组，不得依赖隐式归属。
 type bindingSchedulingAccountRepo struct {
 	AccountRepository
 	accounts        []Account
 	groupQueryCount int
 }
 
-func (r *bindingSchedulingAccountRepo) ListSchedulableByGroupID(_ context.Context, _ int64) ([]Account, error) {
+func (r *bindingSchedulingAccountRepo) ListSchedulableByGroupID(_ context.Context, groupID int64) ([]Account, error) {
 	r.groupQueryCount++
-	return r.accounts, nil
+	filtered := make([]Account, 0, len(r.accounts))
+	for _, acc := range r.accounts {
+		if accountBelongsToGroup(acc, groupID) {
+			filtered = append(filtered, acc)
+		}
+	}
+	return filtered, nil
 }
 
 func (r *bindingSchedulingAccountRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]Account, error) {
@@ -103,8 +110,10 @@ func captureServiceLogs(t *testing.T) *bytes.Buffer {
 // 绑定候选含 opencode_go 账号：能力矩阵判定无适配器，即使优先级更高也必须跳过（设计 §3.2/§3.3）。
 func TestSelectAccountForModelWithPlatform_CrossPlatformBindingSkipped(t *testing.T) {
 	svc, repo := newBindingSchedulingTestService([]Account{
-		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 5, Status: StatusActive, Schedulable: true},
-		{ID: 2, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 5, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 11}}},
+		{ID: 2, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 11}}},
 	})
 
 	ctx := bindingGroupContext(svc, 11, PlatformAnthropic)
@@ -118,9 +127,11 @@ func TestSelectAccountForModelWithPlatform_CrossPlatformBindingSkipped(t *testin
 // anthropic 分组绑定启用 mixed_scheduling 的 antigravity 账号：矩阵显式支持，可以入选。
 func TestSelectAccountForModelWithPlatform_AntigravityMixedCandidateAllowed(t *testing.T) {
 	svc, _ := newBindingSchedulingTestService([]Account{
-		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 5, Status: StatusActive, Schedulable: true},
+		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 5, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 12}}},
 		{ID: 3, Platform: PlatformAntigravity, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true,
-			Extra: map[string]any{"mixed_scheduling": true}},
+			Extra:         map[string]any{"mixed_scheduling": true},
+			AccountGroups: []AccountGroup{{GroupID: 12}}},
 	})
 
 	ctx := bindingGroupContext(svc, 12, PlatformAnthropic)
@@ -133,7 +144,8 @@ func TestSelectAccountForModelWithPlatform_AntigravityMixedCandidateAllowed(t *t
 // 能力矩阵已注册 openai -> opencode_go，必须被选中（设计 §3.2）。
 func TestSelectAccountForModelWithPlatform_OpenAIxOpenCode(t *testing.T) {
 	svc, repo := newBindingSchedulingTestService([]Account{
-		{ID: 9, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+		{ID: 9, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 13}}},
 	})
 
 	ctx := bindingGroupContext(svc, 13, PlatformOpenAI)
@@ -150,7 +162,8 @@ func TestSelectAccountForModelWithPlatform_NoAdapterError(t *testing.T) {
 	logs := captureServiceLogs(t)
 	svc, _ := newBindingSchedulingTestService([]Account{
 		{ID: 5, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
-			Credentials: map[string]any{"api_key": "sk-binding-secret-must-not-be-logged"}},
+			Credentials:   map[string]any{"api_key": "sk-binding-secret-must-not-be-logged"},
+			AccountGroups: []AccountGroup{{GroupID: 14}}},
 	})
 
 	ctx := bindingGroupContext(svc, 14, PlatformAnthropic)
@@ -174,7 +187,8 @@ func TestSelectAccountForModelWithPlatform_NoAdapterError(t *testing.T) {
 func TestSelectAccountForModelWithPlatform_MixedSchedulingUnchanged(t *testing.T) {
 	svcOn, _ := newBindingSchedulingTestService([]Account{
 		{ID: 21, Platform: PlatformAntigravity, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
-			Extra: map[string]any{"mixed_scheduling": true}},
+			Extra:         map[string]any{"mixed_scheduling": true},
+			AccountGroups: []AccountGroup{{GroupID: 21}}},
 	})
 	ctxOn := bindingGroupContext(svcOn, 21, PlatformAnthropic)
 	acc, err := svcOn.selectAccountForModelWithPlatform(ctxOn, ptr(int64(21)), "", "", nil, PlatformAnthropic)
@@ -183,7 +197,8 @@ func TestSelectAccountForModelWithPlatform_MixedSchedulingUnchanged(t *testing.T
 
 	svcOff, _ := newBindingSchedulingTestService([]Account{
 		{ID: 22, Platform: PlatformAntigravity, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
-			Extra: map[string]any{"mixed_scheduling": false}},
+			Extra:         map[string]any{"mixed_scheduling": false},
+			AccountGroups: []AccountGroup{{GroupID: 22}}},
 	})
 	ctxOff := bindingGroupContext(svcOff, 22, PlatformAnthropic)
 	_, err = svcOff.selectAccountForModelWithPlatform(ctxOff, ptr(int64(22)), "", "", nil, PlatformAnthropic)
@@ -211,10 +226,13 @@ func TestListSchedulableAccounts_UngroupedPathKeepsPlatformFilter(t *testing.T) 
 // 分组路径按绑定关系取候选，再在内存按能力矩阵过滤（设计 §3.3）。
 func TestSchedulerSnapshotLoadAccountsFromDB_BindingDimension(t *testing.T) {
 	repo := &bindingSchedulingAccountRepo{accounts: []Account{
-		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
-		{ID: 2, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true},
+		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 7}}},
+		{ID: 2, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 7}}},
 		{ID: 3, Platform: PlatformAntigravity, Type: AccountTypeAPIKey, Priority: 3, Status: StatusActive, Schedulable: true,
-			Extra: map[string]any{"mixed_scheduling": true}},
+			Extra:         map[string]any{"mixed_scheduling": true},
+			AccountGroups: []AccountGroup{{GroupID: 7}}},
 	}}
 	svc := &SchedulerSnapshotService{accountRepo: repo, cfg: testConfig()}
 
@@ -238,8 +256,10 @@ func TestSchedulerSnapshotLoadAccountsFromDB_BindingDimension(t *testing.T) {
 func TestBindingUnsupportedSelectionError_SkippedPlatformsSorted(t *testing.T) {
 	logs := captureServiceLogs(t)
 	svc, _ := newBindingSchedulingTestService([]Account{
-		{ID: 1, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
-		{ID: 2, Platform: PlatformGrok, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true},
+		{ID: 1, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 15}}},
+		{ID: 2, Platform: PlatformGrok, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 15}}},
 	})
 
 	ctx := bindingGroupContext(svc, 15, PlatformAnthropic)
@@ -260,4 +280,62 @@ func TestBindingUnsupportedSelectionError_NoGroupKeepsLegacyError(t *testing.T) 
 
 	err = svc.bindingUnsupportedSelectionError(context.Background(), ptr(int64(31)), PlatformOpenAI, "glm-5.3")
 	require.NoError(t, err, "无候选账号时不应产生绑定能力错误")
+}
+
+// TestListSchedulableByGroupID_UnboundAndOtherGroupAccountsNotVisible 绑定维度查询负例：
+// 未声明 AccountGroups 的账号不属于任何分组，其他分组的账号也不可见，mock 不得再依赖
+// “无绑定即视为属于任意分组”的隐式语义。
+func TestListSchedulableByGroupID_UnboundAndOtherGroupAccountsNotVisible(t *testing.T) {
+	repo := &bindingSchedulingAccountRepo{accounts: []Account{
+		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 30}}},
+		{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 31}}},
+		{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true},
+		{ID: 4, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 30}, {GroupID: 31}}},
+	}}
+
+	accounts, err := repo.ListSchedulableByGroupID(context.Background(), 30)
+	require.NoError(t, err)
+
+	gotIDs := make([]int64, 0, len(accounts))
+	for _, acc := range accounts {
+		gotIDs = append(gotIDs, acc.ID)
+	}
+	require.ElementsMatch(t, []int64{1, 4}, gotIDs, "只有真实绑定分组 30 的账号可见")
+	require.Equal(t, 1, repo.groupQueryCount)
+}
+
+// TestSelectAccountForModelWithPlatform_UnboundAndOtherGroupAccountsNotVisible 选号负例：
+// 高优先级的未绑定账号与其他分组账号都不可见，只能选到真实绑定该分组的账号。
+func TestSelectAccountForModelWithPlatform_UnboundAndOtherGroupAccountsNotVisible(t *testing.T) {
+	svc, repo := newBindingSchedulingTestService([]Account{
+		{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+		{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 41}}},
+		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 3, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 40}}},
+	})
+
+	ctx := bindingGroupContext(svc, 40, PlatformAnthropic)
+	acc, err := svc.selectAccountForModelWithPlatform(ctx, ptr(int64(40)), "", "", nil, PlatformAnthropic)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), acc.ID, "未绑定账号与其他分组账号即使优先级更高也不得入选")
+	require.Equal(t, 1, repo.groupQueryCount)
+}
+
+// TestSelectAccountForModelWithPlatform_OnlyUnboundCandidatesReturnsNoAccount 选号负例：
+// 分组内没有任何真实绑定账号时不得回落到未绑定账号，必须报无可调度账号。
+func TestSelectAccountForModelWithPlatform_OnlyUnboundCandidatesReturnsNoAccount(t *testing.T) {
+	svc, _ := newBindingSchedulingTestService([]Account{
+		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true},
+		{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true,
+			AccountGroups: []AccountGroup{{GroupID: 42}}},
+	})
+
+	ctx := bindingGroupContext(svc, 41, PlatformAnthropic)
+	acc, err := svc.selectAccountForModelWithPlatform(ctx, ptr(int64(41)), "", "", nil, PlatformAnthropic)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts, "未绑定账号不得被隐式视为属于被查询分组")
+	require.Nil(t, acc)
 }

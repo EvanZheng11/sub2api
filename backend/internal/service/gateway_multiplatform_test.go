@@ -135,10 +135,10 @@ func (m *mockAccountRepoForPlatform) ListSchedulable(ctx context.Context) ([]Acc
 	return nil, nil
 }
 
-// ListSchedulableByGroupID 绑定维度语义（设计 §3.3）：分组候选按 account_groups
+// ListSchedulableByGroupID 绑定维度语义（设计 §3.3）：分组候选严格按 account_groups
 // 绑定关系返回，不再按账号平台过滤，平台能力由调度层能力矩阵在内存判定。
-// fixtures 未声明 AccountGroups 的账号沿用旧 mock 的隐式语义，视为绑定到被查询的
-// 分组；已声明绑定的账号必须命中该分组（跨分组账号不可见）。
+// 未声明 AccountGroups 的账号视为未绑定任何分组，不得被隐式视为属于被查询分组；
+// 因此凡是走分组路径的测试 fixture 必须显式设置 AccountGroups（跨分组账号不可见）。
 func (m *mockAccountRepoForPlatform) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
 	if m.groupSchedulableFunc != nil {
 		return m.groupSchedulableFunc(ctx, groupID)
@@ -148,7 +148,7 @@ func (m *mockAccountRepoForPlatform) ListSchedulableByGroupID(ctx context.Contex
 		if !acc.IsSchedulable() {
 			continue
 		}
-		if len(acc.AccountGroups) > 0 && !accountBelongsToGroup(acc, groupID) {
+		if !accountBelongsToGroup(acc, groupID) {
 			continue
 		}
 		result = append(result, acc)
@@ -846,8 +846,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_RoutedStickySessionCle
 
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformAnthropic, Priority: 2, Status: StatusDisabled, Schedulable: true},
-			{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+			{ID: 1, Platform: PlatformAnthropic, Priority: 2, Status: StatusDisabled, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+			{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 		},
 		accountsByID: map[int64]*Account{},
 	}
@@ -897,8 +897,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_RoutedStickySessionHit
 
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
-			{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
+			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+			{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 		},
 		accountsByID: map[int64]*Account{},
 	}
@@ -946,8 +946,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_RoutedFallbackToNormal
 
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
-			{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
+			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+			{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 		},
 		accountsByID: map[int64]*Account{},
 	}
@@ -1473,8 +1473,8 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		requestedModel := "claude-sonnet-4-5"
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
-				{ID: 2, Platform: PlatformAntigravity, Priority: 2, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAntigravity, Priority: 2, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -1518,7 +1518,7 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		requestedModel := "claude-sonnet-4-5"
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 				{ID: 2, Platform: PlatformAntigravity, Priority: 2, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
@@ -1565,8 +1565,8 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		requestedModel := "claude-3-5-sonnet-20241022"
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
-				{ID: 2, Platform: PlatformAntigravity, Priority: 2, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAntigravity, Priority: 2, Status: StatusActive, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -1610,8 +1610,8 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		requestedModel := "claude-3-5-sonnet-20241022"
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
-				{ID: 2, Platform: PlatformAntigravity, Priority: 2, Status: StatusActive, Schedulable: true}, // 未启用 mixed_scheduling
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAntigravity, Priority: 2, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}}, // 未启用 mixed_scheduling
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -1656,15 +1656,16 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		resetAt := time.Now().Add(10 * time.Minute)
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: false},
-				{ID: 3, Platform: PlatformAntigravity, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: false, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 3, Platform: PlatformAntigravity, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 				{
-					ID:          4,
-					Platform:    PlatformAnthropic,
-					Priority:    1,
-					Status:      StatusActive,
-					Schedulable: true,
+					ID:            4,
+					Platform:      PlatformAnthropic,
+					Priority:      1,
+					Status:        StatusActive,
+					Schedulable:   true,
+					AccountGroups: []AccountGroup{{GroupID: groupID}},
 					Extra: map[string]any{
 						"model_rate_limits": map[string]any{
 							"claude-3-5-sonnet-20241022": map[string]any{
@@ -1674,15 +1675,16 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 					},
 				},
 				{
-					ID:          5,
-					Platform:    PlatformAnthropic,
-					Priority:    1,
-					Status:      StatusActive,
-					Schedulable: true,
-					Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+					ID:            5,
+					Platform:      PlatformAnthropic,
+					Priority:      1,
+					Status:        StatusActive,
+					Schedulable:   true,
+					AccountGroups: []AccountGroup{{GroupID: groupID}},
+					Credentials:   map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
 				},
-				{ID: 6, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
-				{ID: 7, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 6, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 7, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -1881,8 +1883,8 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 		requestedModel := "claude-3-5-sonnet-20241022"
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAntigravity, Priority: 1, Status: StatusDisabled, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
+				{ID: 1, Platform: PlatformAntigravity, Priority: 1, Status: StatusDisabled, Schedulable: true, Extra: map[string]any{"mixed_scheduling": true}, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2683,8 +2685,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2741,8 +2743,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2796,7 +2798,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2850,8 +2852,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2907,8 +2909,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2964,9 +2966,9 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 3, Platform: PlatformAnthropic, Priority: 0, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 3, Platform: PlatformAnthropic, Priority: 0, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -3059,8 +3061,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, Type: AccountTypeAPIKey},
-				{ID: 2, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, Type: AccountTypeOAuth},
+				{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, Type: AccountTypeAPIKey, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 2, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, Type: AccountTypeOAuth, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -3111,16 +3113,17 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		now := time.Now().Add(10 * time.Minute)
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 3, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: false, Concurrency: 5},
-				{ID: 4, Platform: PlatformAntigravity, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 3, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: false, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+				{ID: 4, Platform: PlatformAntigravity, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 				{
-					ID:          5,
-					Platform:    PlatformAnthropic,
-					Priority:    1,
-					Status:      StatusActive,
-					Schedulable: true,
-					Concurrency: 5,
+					ID:            5,
+					Platform:      PlatformAnthropic,
+					Priority:      1,
+					Status:        StatusActive,
+					Schedulable:   true,
+					Concurrency:   5,
+					AccountGroups: []AccountGroup{{GroupID: groupID}},
 					Extra: map[string]any{
 						"model_rate_limits": map[string]any{
 							"claude-3-5-sonnet-20241022": map[string]any{
@@ -3130,15 +3133,16 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 					},
 				},
 				{
-					ID:          6,
-					Platform:    PlatformAnthropic,
-					Priority:    1,
-					Status:      StatusActive,
-					Schedulable: true,
-					Concurrency: 5,
-					Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+					ID:            6,
+					Platform:      PlatformAnthropic,
+					Priority:      1,
+					Status:        StatusActive,
+					Schedulable:   true,
+					Concurrency:   5,
+					AccountGroups: []AccountGroup{{GroupID: groupID}},
+					Credentials:   map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
 				},
-				{ID: 7, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 7, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -3190,7 +3194,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true},
+				{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: fallbackID}}},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -3361,7 +3365,7 @@ func TestGatewayService_GroupResolution_ReusesContextGroup(t *testing.T) {
 
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 		},
 		accountsByID: map[int64]*Account{},
 	}
@@ -3398,7 +3402,7 @@ func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T)
 
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 		},
 		accountsByID: map[int64]*Account{},
 	}
@@ -3474,7 +3478,7 @@ func TestGatewayService_GroupResolution_FallbackUsesLiteOnce(t *testing.T) {
 
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
+			{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: fallbackID}}},
 		},
 		accountsByID: map[int64]*Account{},
 	}
@@ -3570,8 +3574,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_RoutedOpenAIGroup(t *t
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{
 			// Priority 1 would win any group-wide selection, but it is not routed.
-			{ID: 1, Platform: PlatformOpenAI, Priority: 1, Status: StatusActive, Schedulable: true},
-			{ID: 2, Platform: PlatformOpenAI, Priority: 5, Status: StatusActive, Schedulable: true},
+			{ID: 1, Platform: PlatformOpenAI, Priority: 1, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+			{ID: 2, Platform: PlatformOpenAI, Priority: 5, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
 		},
 		accountsByID: map[int64]*Account{},
 	}
