@@ -64,19 +64,19 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	clientStream := responsesReq.Stream
 
 	// 3. Convert Responses → Anthropic
-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
-	if err != nil {
-		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
-		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
-	}
-
-	// 4. Model mapping（OpenAI 网关统一入口的映射语义）
+	// Resolve the mapped model before choosing its thinking/tool protocol.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	anthropicReq.Model = upstreamModel
-
-	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
+	if err := validateClaude55Request(body, upstreamModel); err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	responsesReq.Model = upstreamModel
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+	if err != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+	}
 
 	// 5. Force upstream streaming（客户端原始终决定响应格式；
 	// 上游恒为流式，非流式由缓冲路径组装）。
@@ -116,11 +116,14 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-	upstreamReq, _, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, anthropicBody, apiKey, targetURL, body)
+	upstreamReq, forwardedBody, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, anthropicBody, apiKey, targetURL, body)
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
+	// Bill the Anthropic effort actually sent upstream (for example xhigh → max).
+	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, upstreamModel)
 
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {
@@ -245,6 +248,8 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 					finalResp.Content[idx].Text += event.Delta.Text
 				case "thinking_delta":
 					finalResp.Content[idx].Thinking += event.Delta.Thinking
+				case "signature_delta":
+					finalResp.Content[idx].Signature += event.Delta.Signature
 				case "input_json_delta":
 					finalResp.Content[idx].Input = appendRawJSON(finalResp.Content[idx].Input, event.Delta.PartialJSON)
 				}
@@ -266,6 +271,9 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		}
 	}
 
+	if isClaude55SignedThinkingModel(upstreamModel) {
+		finalResp.Model = upstreamModel
+	}
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	responsesResp.Model = originalModel
 
@@ -320,16 +328,29 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
+	state.PreserveThinkingSignatures = isClaude55SignedThinkingModel(upstreamModel)
 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
 
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	semanticOutputStarted := false
+	responseCommitted := false
+	sawMessageStop := false
+	sawTerminalMessageDelta := false
+	var pendingEvents []apicompat.ResponsesStreamEvent
+
+	commitResponse := func() {
+		if responseCommitted {
+			return
+		}
+		c.Writer.WriteHeader(http.StatusOK)
+		responseCommitted = true
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -376,6 +397,12 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			zap.String("request_id", requestID),
 			zap.Duration("interval", streamInterval),
 		)
+		if !semanticOutputStarted {
+			return resultWithUsage(), fmt.Errorf(
+				"stream data interval timeout: %w",
+				newOpenAIStreamFailoverError(resp, "stream idle before semantic output"),
+			)
+		}
 		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 	}
 
@@ -384,23 +411,56 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	// output_tokens 只在末尾 message_delta 携带，提前退出会把整段生成记成 ~1
 	// token，payg 上游照常计费而平台漏记。状态机照常推进以保证 finalize 一致。
 	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) {
-		if firstChunk {
-			firstChunk = false
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-		}
-
-		if event.Type == "message_delta" && event.Usage != nil {
-			mergeAnthropicUsage(&usage, *event.Usage)
+		if event.Type == "message_delta" {
+			if event.Usage != nil {
+				mergeAnthropicUsage(&usage, *event.Usage)
+			}
+			if event.Delta != nil && event.Delta.StopReason != "" {
+				sawTerminalMessageDelta = true
+			}
 		}
 		if event.Type == "message_start" && event.Message != nil {
 			mergeAnthropicUsage(&usage, event.Message.Usage)
 		}
 
+		// Keep terminal Responses usage aligned with the normalized billing
+		// buckets. Normalize converter input too so raw overlapping totals cannot
+		// overwrite the state when message_start/message_delta handlers run.
+		syncAnthropicResponsesUsage(state, usage)
+		normalizeAnthropicEventUsageForResponses(event, usage)
+
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
+		if event.Type == "message_stop" {
+			sawMessageStop = true
+		}
 		if clientDisconnected {
 			return
 		}
+		if !semanticOutputStarted {
+			hasSemanticOutput := anthropicEventHasSemanticOutput(event)
+			isTerminalMessageDelta := event.Type == "message_delta" &&
+				event.Delta != nil && event.Delta.StopReason != ""
+			if !hasSemanticOutput && event.Type != "message_stop" && !isTerminalMessageDelta {
+				pendingEvents = append(pendingEvents, events...)
+				return
+			}
+			if !hasSemanticOutput {
+				return
+			}
+			semanticOutputStarted = true
+			pendingEvents = append(pendingEvents, events...)
+			if semanticOutputStarted && firstChunk {
+				firstChunk = false
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			events = pendingEvents
+			pendingEvents = nil
+		}
+		if len(events) == 0 {
+			return
+		}
+		commitResponse()
 		for _, evt := range events {
 			payload, err := json.Marshal(evt)
 			if err != nil {
@@ -419,9 +479,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 				}
 			}
 		}
-		if len(events) > 0 {
-			c.Writer.Flush()
-		}
+		c.Writer.Flush()
 	}
 
 	for {
@@ -458,10 +516,24 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		processAnthropicEvent(&event)
 	}
 
+	if !semanticOutputStarted {
+		logger.L().Warn("openai responses via native anthropic stream: stream ended without semantic output",
+			zap.String("request_id", requestID),
+			zap.Bool("saw_message_stop", sawMessageStop),
+			zap.Bool("saw_terminal_message_delta", sawTerminalMessageDelta),
+		)
+		return resultWithUsage(), newOpenAIStreamFailoverError(resp, "stream ended without semantic output")
+	}
+	if !sawMessageStop && !sawTerminalMessageDelta {
+		return resultWithUsage(), fmt.Errorf("stream ended after semantic output before message_stop")
+	}
+
 	// Finalize state machine（客户端已断开时仍推进，保证 usage 汇总完整；仅在
 	// 客户端仍连接时写出）。终态帧与逐事件路径一致过工具名反转与客户端工具还原，
 	// 避免流截断时终态帧携带改写后的工具名。
 	if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 && !clientDisconnected {
+		finalEvents = append(pendingEvents, finalEvents...)
+		commitResponse()
 		wrote := false
 		for _, evt := range finalEvents {
 			payload, err := json.Marshal(evt)

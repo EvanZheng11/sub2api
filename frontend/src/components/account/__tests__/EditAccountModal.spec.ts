@@ -2,17 +2,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
+const {
+  updateAccountMock,
+  checkMixedChannelRiskMock,
+  showErrorMock,
+  showSuccessMock,
+  showWarningMock,
+  authIsSimpleMode
+} = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
+  showErrorMock: vi.fn(),
+  showSuccessMock: vi.fn(),
+  showWarningMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
-    showSuccess: vi.fn(),
-    showInfo: vi.fn()
+    showError: showErrorMock,
+    showSuccess: showSuccessMock,
+    showInfo: vi.fn(),
+    showWarning: showWarningMock
   })
 }))
 
@@ -70,6 +81,7 @@ const BaseDialogStub = defineComponent({
 const ModelWhitelistSelectorStub = defineComponent({
   name: 'ModelWhitelistSelector',
   props: {
+    modelMappings: { type: Array, default: () => [] },
     modelValue: {
       type: Array,
       default: () => []
@@ -135,6 +147,13 @@ const GroupSelectorStub = defineComponent({
         @click="$emit('update:modelValue', [7])"
       >
         group
+      </button>
+      <button
+        type="button"
+        data-testid="set-reordered-groups"
+        @click="$emit('update:modelValue', [2, 1])"
+      >
+        reorder
       </button>
     </div>
   `
@@ -329,6 +348,24 @@ describe('EditAccountModal', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
+    const account = buildAccount()
+    account.credentials.model_mapping = { 'gpt-5.2': 'gpt-5.2', 'gpt-latest': 'deepseek-chat' }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('modelMappings')).toEqual([
+      { from: 'gpt-latest', to: 'deepseek-chat' }
+    ])
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual(account.credentials.model_mapping)
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true, account: { ...account } })
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('modelMappings')).toEqual([
+      { from: 'gpt-latest', to: 'deepseek-chat' }
+    ])
+  })
 
   it('sets expiry presets from now instead of extending the saved expiry', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -1650,6 +1687,63 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
       'antigravity_project_id'
     )
+  })
+
+  it('检测到混合渠道风险时只提示并继续更新账号', async () => {
+    const account = buildAntigravityAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({
+      has_risk: true,
+      message: '检测到混合渠道风险'
+    })
+    showWarningMock.mockReset()
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="set-shadow-group"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(checkMixedChannelRiskMock).toHaveBeenCalled()
+    expect(showWarningMock).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('按平台和规范化后的组集合缓存风险检查，组变更后重新检查', async () => {
+    const account = buildAntigravityAccount()
+    account.group_ids = [1, 2]
+    updateAccountMock.mockReset().mockRejectedValue({ message: '保存失败' })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="set-reordered-groups"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="set-shadow-group"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(2)
+    expect(checkMixedChannelRiskMock.mock.calls[1]?.[0]?.group_ids).toEqual([7])
+  })
+
+  it('更新接口拒绝 mixed_channel_warning 时只展示错误并保持弹窗打开', async () => {
+    const account = buildAntigravityAccount()
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
+    updateAccountMock.mockReset().mockRejectedValueOnce({
+      status: 409,
+      error: 'mixed_channel_warning',
+      message: 'mixed_channel_warning: Group conflict'
+    })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(showSuccessMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('mixed_channel_warning: Group conflict')
+    expect(wrapper.emitted('close')).toBeUndefined()
   })
 })
 

@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -54,7 +55,6 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 		return nil, fmt.Errorf("missing model in request")
 	}
 	clientStream := ccReq.Stream
-	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 
 	// 2. Convert CC → Responses → Anthropic (chained conversion)
 	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
@@ -62,16 +62,19 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
 		return nil, fmt.Errorf("convert chat completions to responses: %w", err)
 	}
-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
-	if err != nil {
-		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
-		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
-	}
-
-	// 3. Model mapping（OpenAI 网关统一入口的映射语义）
+	// Resolve the mapped model before choosing its thinking/tool protocol.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	anthropicReq.Model = upstreamModel
+	if err := validateClaude55Request(body, upstreamModel); err != nil {
+		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	responsesReq.Model = upstreamModel
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
+	if err != nil {
+		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+	}
 
 	// 4. Force upstream streaming（客户端原始终决定响应格式；
 	// 上游恒为流式，非流式由缓冲路径组装）。
@@ -111,7 +114,7 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 	}
 
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-	upstreamReq, _, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, anthropicBody, apiKey, targetURL, body)
+	upstreamReq, forwardedBody, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, anthropicBody, apiKey, targetURL, body)
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
@@ -132,11 +135,12 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 
-	reasoningEffort := extractCCReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
+	// Bill the Anthropic effort actually sent upstream (for example xhigh → max).
+	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, upstreamModel)
 
 	if clientStream {
-		return s.handleCCStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, includeUsage)
+		return s.handleCCStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime)
 	}
 	return s.handleCCBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime)
 }
@@ -303,7 +307,6 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	upstreamModel string,
 	reasoningEffort *string,
 	startTime time.Time,
-	includeUsage bool,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -314,18 +317,29 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
 
 	anthState := apicompat.NewAnthropicEventToResponsesState()
 	anthState.Model = originalModel
 	ccState := apicompat.NewResponsesEventToChatState()
 	ccState.Model = originalModel
-	ccState.IncludeUsage = includeUsage
 
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	semanticOutputStarted := false
+	responseCommitted := false
+	sawMessageStop := false
+	sawTerminalMessageDelta := false
+	var pendingChunks []apicompat.ChatCompletionsChunk
+
+	commitResponse := func() {
+		if responseCommitted {
+			return
+		}
+		c.Writer.WriteHeader(http.StatusOK)
+		responseCommitted = true
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -376,6 +390,12 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 				zap.Duration("interval", streamInterval),
 			)
 		}
+		if !semanticOutputStarted {
+			return resultWithUsage(), fmt.Errorf(
+				"stream data interval timeout: %w",
+				newOpenAIStreamFailoverError(resp, "stream idle before semantic output"),
+			)
+		}
 		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 	}
 
@@ -388,6 +408,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 			return false
 		}
 		out := string(reverseToolNamesIfPresent(c, []byte(sse)))
+		commitResponse()
 		if _, err := fmt.Fprint(c.Writer, out); err != nil {
 			clientDisconnected = true
 			return false
@@ -396,34 +417,63 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	}
 
 	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) bool {
-		if firstChunk {
-			firstChunk = false
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-		}
-
 		// usage 恒累计（含客户端断开后的排水阶段，payg 上游照常计费）。
-		if event.Type == "message_delta" && event.Usage != nil {
-			mergeAnthropicUsage(&usage, *event.Usage)
+		if event.Type == "message_delta" {
+			if event.Usage != nil {
+				mergeAnthropicUsage(&usage, *event.Usage)
+			}
+			if event.Delta != nil && event.Delta.StopReason != "" {
+				sawTerminalMessageDelta = true
+			}
 		}
 		if event.Type == "message_start" && event.Message != nil {
 			mergeAnthropicUsage(&usage, event.Message.Usage)
 		}
 
+		// Keep the outward Responses/Chat usage on the same normalized buckets used
+		// for billing, including converter handlers that consume event usage.
+		syncAnthropicResponsesUsage(anthState, usage)
+		normalizeAnthropicEventUsageForResponses(event, usage)
+
 		// 客户端已断开：跳过转换与写出，继续读上游直到流结束（usage 完整、
 		// 连接及时归还），不再提前 return。
+		if event.Type == "message_stop" {
+			sawMessageStop = true
+		}
 		if clientDisconnected {
 			return false
 		}
 
 		responsesEvents := apicompat.AnthropicEventToResponsesEvents(event, anthState)
+		var chunks []apicompat.ChatCompletionsChunk
 		for _, resEvt := range responsesEvents {
-			ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
-			for _, chunk := range ccChunks {
-				writeChunk(chunk)
-			}
+			chunks = append(chunks, apicompat.ResponsesEventToChatChunks(&resEvt, ccState)...)
 		}
-		if len(responsesEvents) > 0 {
+		if !semanticOutputStarted {
+			hasSemanticOutput := anthropicEventHasSemanticOutput(event)
+			isTerminalMessageDelta := event.Type == "message_delta" &&
+				event.Delta != nil && event.Delta.StopReason != ""
+			if !hasSemanticOutput && event.Type != "message_stop" && !isTerminalMessageDelta {
+				pendingChunks = append(pendingChunks, chunks...)
+				return false
+			}
+			if !hasSemanticOutput {
+				return false
+			}
+			semanticOutputStarted = true
+			pendingChunks = append(pendingChunks, chunks...)
+			if semanticOutputStarted && firstChunk {
+				firstChunk = false
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			chunks = pendingChunks
+			pendingChunks = nil
+		}
+		for _, chunk := range chunks {
+			writeChunk(chunk)
+		}
+		if len(chunks) > 0 {
 			c.Writer.Flush()
 		}
 		return false
@@ -461,21 +511,36 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 			continue
 		}
 
+		// Forward received usage regardless of the client stream_options.
+		// The intermediate Responses converter synthesizes usage even when absent.
+		ccState.IncludeUsage = ccState.IncludeUsage || anthropicChatStreamHasUsage(&event, payload)
+
 		if processAnthropicEvent(&event) {
 			return resultWithUsage(), nil
 		}
 	}
 
+	if !semanticOutputStarted {
+		logger.L().Warn("openai cc via native anthropic stream: stream ended without semantic output",
+			zap.String("request_id", requestID),
+			zap.Bool("saw_message_stop", sawMessageStop),
+			zap.Bool("saw_terminal_message_delta", sawTerminalMessageDelta),
+		)
+		return resultWithUsage(), newOpenAIStreamFailoverError(resp, "stream ended without semantic output")
+	}
+	if !sawMessageStop && !sawTerminalMessageDelta {
+		return resultWithUsage(), fmt.Errorf("stream ended after semantic output before message_stop")
+	}
+
 	// Finalize both state machines（客户端已断开时仍执行，保证 usage 汇总完整）。
 	finalResEvents := apicompat.FinalizeAnthropicResponsesStream(anthState)
+	var finalChunks []apicompat.ChatCompletionsChunk
+	finalChunks = append(finalChunks, pendingChunks...)
 	for _, resEvt := range finalResEvents {
-		ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
-		for _, chunk := range ccChunks {
-			writeChunk(chunk) //nolint:errcheck
-		}
+		finalChunks = append(finalChunks, apicompat.ResponsesEventToChatChunks(&resEvt, ccState)...)
 	}
-	finalCCChunks := apicompat.FinalizeResponsesChatStream(ccState)
-	for _, chunk := range finalCCChunks {
+	finalChunks = append(finalChunks, apicompat.FinalizeResponsesChatStream(ccState)...)
+	for _, chunk := range finalChunks {
 		writeChunk(chunk) //nolint:errcheck
 	}
 

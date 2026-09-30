@@ -15,6 +15,16 @@ type snapshotHydrationCache struct {
 	accounts map[int64]*Account
 }
 
+type snapshotNoQueryAccountRepo struct {
+	AccountRepository
+	groupQueryCount int
+}
+
+func (r *snapshotNoQueryAccountRepo) ListSchedulableByGroupID(context.Context, int64) ([]Account, error) {
+	r.groupQueryCount++
+	return nil, nil
+}
+
 func (c *snapshotHydrationCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
 	return c.snapshot, true, nil
 }
@@ -292,5 +302,38 @@ func TestGatewaySelectAccountWithLoadAwareness_SkipsAntigravityGeminiFamilyRateL
 	}
 	if result.Account.ID != 2 {
 		t.Fatalf("expected scheduler to skip Gemini-family limited antigravity account 1, got %d", result.Account.ID)
+	}
+}
+
+func TestSchedulerSnapshotCacheFiltersUnsupportedGeminiCandidateWithoutRequery(t *testing.T) {
+	cache := &snapshotHydrationCache{
+		snapshot: []*Account{{
+			ID:       1,
+			Platform: PlatformAntigravity,
+			Type:     AccountTypeUpstream,
+			Extra:    map[string]any{"mixed_scheduling": true},
+		}},
+	}
+	repo := &snapshotNoQueryAccountRepo{}
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, testConfig())
+	groupID := int64(24)
+
+	accounts, useMixed, rawCandidates, err := schedulerSnapshot.ListSchedulableAccountsWithDiagnostics(
+		context.Background(), &groupID, PlatformGemini, false,
+	)
+	if err != nil {
+		t.Fatalf("快照候选读取失败: %v", err)
+	}
+	if !useMixed {
+		t.Fatal("gemini 非强制平台应使用混合调度")
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("缓存中的 antigravity upstream 必须被过滤，实际候选：%+v", accounts)
+	}
+	if len(rawCandidates) != 0 {
+		t.Fatalf("快照命中不应伪造原始候选，实际：%+v", rawCandidates)
+	}
+	if repo.groupQueryCount != 0 {
+		t.Fatalf("快照命中失败诊断不应额外查询分组候选，查询次数：%d", repo.groupQueryCount)
 	}
 }

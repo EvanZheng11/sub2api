@@ -6,6 +6,9 @@ const {
   createAccountMock,
   probeUpstreamBillingMock,
   syncUpstreamModelsMock,
+  checkMixedChannelRiskMock,
+  showErrorMock,
+  showSuccessMock,
   showWarningMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
@@ -14,6 +17,9 @@ const {
   createAccountMock: vi.fn(),
   probeUpstreamBillingMock: vi.fn(),
   syncUpstreamModelsMock: vi.fn(),
+  checkMixedChannelRiskMock: vi.fn(),
+  showErrorMock: vi.fn(),
+  showSuccessMock: vi.fn(),
   showWarningMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
@@ -22,8 +28,8 @@ const {
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
-    showSuccess: vi.fn(),
+    showError: showErrorMock,
+    showSuccess: showSuccessMock,
     showWarning: showWarningMock,
   }),
 }))
@@ -42,7 +48,7 @@ vi.mock('@/api/admin', () => ({
       create: createAccountMock,
       probeUpstreamBilling: probeUpstreamBillingMock,
       syncUpstreamModels: syncUpstreamModelsMock,
-      checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
       importCodexSession: importCodexSessionMock,
       createOpenAICodexPAT: createOpenAICodexPATMock,
     },
@@ -86,6 +92,9 @@ const OAuthAuthorizationFlowStub = defineComponent({
     initialInputMethod: String,
   },
   data: () => ({ inputMethod: 'manual' }),
+  methods: {
+    reset() {},
+  },
   emits: ['import-codex-session', 'import-codex-pat'],
   template: `
     <div>
@@ -105,13 +114,22 @@ const GroupSelectorStub = defineComponent({
   },
   emits: ['update:modelValue'],
   template: `
-    <button
-      type="button"
-      data-testid="select-pricing-groups"
-      @click="$emit('update:modelValue', [1, 2])"
-    >
-      groups
-    </button>
+    <div>
+      <button
+        type="button"
+        data-testid="select-pricing-groups"
+        @click="$emit('update:modelValue', [1, 2])"
+      >
+        groups
+      </button>
+      <button
+        type="button"
+        data-testid="select-pricing-groups-changed"
+        @click="$emit('update:modelValue', [3])"
+      >
+        changed groups
+      </button>
+    </div>
   `,
 })
 
@@ -200,6 +218,9 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
     showWarningMock.mockReset()
     importCodexSessionMock.mockReset().mockResolvedValue({
       created: 1,
@@ -443,6 +464,67 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(false)
     expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+  })
+
+  it('检测到混合渠道风险时只提示并继续创建账号', async () => {
+    checkMixedChannelRiskMock.mockResolvedValueOnce({
+      has_risk: true,
+      message: '检测到混合渠道风险'
+    })
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.claudeConsole')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('风险账号')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(checkMixedChannelRiskMock).toHaveBeenCalled()
+    expect(showWarningMock).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('返回基础信息更换分组后重新检查风险，并在有风险时继续创建', async () => {
+    checkMixedChannelRiskMock
+      .mockResolvedValueOnce({ has_risk: false })
+      .mockResolvedValueOnce({ has_risk: true })
+    const wrapper = mountModal()
+
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('风险账号')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const backButton = wrapper.findAll('button').find((button) => button.text() === 'common.back')
+    expect(backButton).toBeDefined()
+    await backButton?.trigger('click')
+    await wrapper.get('[data-testid="select-pricing-groups-changed"]').trigger('click')
+    await selectButtonByText(wrapper, 'admin.accounts.claudeConsole')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(2)
+    expect(checkMixedChannelRiskMock.mock.calls[1]?.[0]).toMatchObject({
+      platform: 'anthropic',
+      group_ids: [3]
+    })
+    expect(showWarningMock).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('创建接口拒绝 mixed_channel_warning 时只展示错误并保持弹窗打开', async () => {
+    createAccountMock.mockRejectedValueOnce({
+      status: 409,
+      error: 'mixed_channel_warning',
+      message: 'mixed_channel_warning: Group conflict'
+    })
+
+    const wrapper = await submitApiKeyAccount('openai')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(showSuccessMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalled()
+    expect(wrapper.emitted('close')).toBeUndefined()
   })
 
   it('submits OpenCode Zen default protocol rules with adaptive endpoints', async () => {

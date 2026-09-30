@@ -198,6 +198,12 @@ func (r *fullRebuildAccountRepo) record(groupID int64, platform string) ([]Accou
 	return []Account{{ID: 1, Platform: platform, Status: StatusActive, Schedulable: true}}, nil
 }
 
+// ListSchedulableByGroupID 绑定维度查询（设计 §3.3）：分组候选只按绑定关系返回，
+// 查询平台不再作为 SQL 条件；记录时用 "" 平台占位。
+func (r *fullRebuildAccountRepo) ListSchedulableByGroupID(_ context.Context, groupID int64) ([]Account, error) {
+	return r.record(groupID, "")
+}
+
 func (r *fullRebuildAccountRepo) ListSchedulableByGroupIDAndPlatform(_ context.Context, groupID int64, platform string) ([]Account, error) {
 	return r.record(groupID, platform)
 }

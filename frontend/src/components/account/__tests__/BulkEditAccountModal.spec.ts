@@ -5,9 +5,10 @@ import BulkEditAccountModal from '../BulkEditAccountModal.vue'
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
 import { adminAPI } from '@/api/admin'
 
-const { showError, showSuccess, translate } = vi.hoisted(() => ({
+const { showError, showSuccess, showWarning, translate } = vi.hoisted(() => ({
   showError: vi.fn(),
   showSuccess: vi.fn(),
+  showWarning: vi.fn(),
   translate: vi.fn((key: string) => key)
 }))
 
@@ -15,6 +16,7 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
     showSuccess,
+    showWarning,
     showInfo: vi.fn()
   })
 }))
@@ -73,7 +75,10 @@ function mountModal(extraProps: Record<string, unknown> = {}) {
           `
         },
         ProxySelector: true,
-        GroupSelector: true,
+        GroupSelector: {
+          template: '<button type="button" data-testid="set-bulk-groups" @click="$emit(\'update:modelValue\', [7])">group</button>',
+          emits: ['update:modelValue']
+        },
         Icon: true
       }
     }
@@ -86,6 +91,7 @@ describe('BulkEditAccountModal', () => {
     vi.mocked(adminAPI.accounts.checkMixedChannelRisk).mockReset()
     showError.mockReset()
     showSuccess.mockReset()
+    showWarning.mockReset()
     translate.mockClear()
 
     vi.mocked(adminAPI.accounts.bulkUpdate).mockResolvedValue({
@@ -123,6 +129,41 @@ describe('BulkEditAccountModal', () => {
     await flushPromises()
 
     expect(showError).toHaveBeenCalledWith('admin.accounts.bulkEdit.rateSyncConflict')
+  })
+
+  it('批量更新接口拒绝 mixed_channel_warning 时只展示错误并保持弹窗打开', async () => {
+    vi.mocked(adminAPI.accounts.bulkUpdate).mockRejectedValueOnce({
+      status: 409,
+      error: 'mixed_channel_warning',
+      message: 'mixed_channel_warning: Group conflict'
+    })
+    const wrapper = mountModal()
+
+    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('mixed_channel_warning: Group conflict')
+    expect(wrapper.emitted('close')).toBeUndefined()
+  })
+
+  it('检测到混合渠道风险时只提示并继续批量更新', async () => {
+    vi.mocked(adminAPI.accounts.checkMixedChannelRisk).mockResolvedValueOnce({
+      has_risk: true,
+      message: '检测到混合渠道风险'
+    } as any)
+    const wrapper = mountModal()
+    await wrapper.get('#bulk-edit-groups-enabled').setValue(true)
+    await wrapper.get('[data-testid="set-bulk-groups"]').trigger('click')
+    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.checkMixedChannelRisk).toHaveBeenCalled()
+    expect(showWarning).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
   })
 
   it('antigravity 白名单包含 Gemini 图片模型且过滤掉普通 GPT 模型', async () => {

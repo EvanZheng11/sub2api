@@ -418,6 +418,8 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, OllamaCloudUsageSessionExtraKey)
 	delete(accountExtra, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(accountExtra, OllamaCloudUsageSnapshotExtraKey)
+	delete(accountExtra, OpenCodeGoUsageAutoRefreshExtraKey)
+	delete(accountExtra, OpenCodeGoUsageSnapshotExtraKey)
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
 	account := &Account{
 		Name:        input.Name,
@@ -506,9 +508,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
-	// 检查混合渠道风险（除非用户已确认）
+	// 检查混合渠道风险（除非用户已确认）：跨平台绑定必须成功，风险仅记录审计日志不再阻断
 	if len(groupIDs) > 0 && !input.SkipMixedChannelCheck {
-		if err := s.checkMixedChannelRisk(ctx, 0, input.Platform, groupIDs); err != nil {
+		if err := s.auditMixedChannelRisk(ctx, 0, input.Platform, groupIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -598,6 +600,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	previousProbeIdentity := upstreamBillingProbeIdentity(account)
 	previousOllamaUsageIdentity := ollamaCloudUsageIdentity(account)
+	previousOpenCodeUsageIdentity := openCodeGoUsageIdentity(account)
 	// 安全/身份不变量(影子账号):通用更新路径被 edit/re-auth/refresh/batch 共用,
 	// 必须在此守住,否则仅在创建时的保证可被这些路径绕过。
 	if account.IsCredentialShadow() {
@@ -674,6 +677,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(normalizedExtra, OllamaCloudUsageSessionExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageSnapshotExtraKey)
+		delete(normalizedExtra, OpenCodeGoUsageAutoRefreshExtraKey)
+		delete(normalizedExtra, OpenCodeGoUsageSnapshotExtraKey)
 		// 保留配额用量和专用服务受管字段，防止普通账号编辑意外覆盖。
 		for _, key := range []string{
 			"quota_used",
@@ -689,6 +694,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			OllamaCloudUsageAutoRefreshExtraKey,
 			OllamaCloudUsageSnapshotExtraKey,
 			OpenAIAutoResetCreditStateExtraKey,
+			OpenCodeGoUsageAutoRefreshExtraKey,
+			OpenCodeGoUsageSnapshotExtraKey,
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
@@ -775,6 +782,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			delete(account.Extra, OllamaCloudUsageSnapshotExtraKey)
 		}
 	}
+	// OpenCode Go 受管键：身份改变或不再 eligible 时随本次写入清除，防止跨组污染。
+	// （代理变化只失效快照而保留开关，由 repository 合并层在锁定的 DB 行上裁决。）
+	if account.Extra != nil {
+		if !IsOpenCodeGoUsageAccount(account) {
+			delete(account.Extra, OpenCodeGoUsageAutoRefreshExtraKey)
+			delete(account.Extra, OpenCodeGoUsageSnapshotExtraKey)
+		} else if !reflect.DeepEqual(previousOpenCodeUsageIdentity, openCodeGoUsageIdentity(account)) {
+			delete(account.Extra, OpenCodeGoUsageAutoRefreshExtraKey)
+			delete(account.Extra, OpenCodeGoUsageSnapshotExtraKey)
+		}
+	}
 	// 只在指针非 nil 时更新 Concurrency（支持设置为 0）
 	if input.Concurrency != nil {
 		account.Concurrency = normalizeAccountConcurrency(account.Platform, account.Type, *input.Concurrency)
@@ -829,9 +847,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 
-		// 检查混合渠道风险（除非用户已确认）
+		// 检查混合渠道风险（除非用户已确认）：跨平台绑定必须成功，风险仅记录审计日志不再阻断
 		if !input.SkipMixedChannelCheck {
-			if err := s.checkMixedChannelRisk(ctx, account.ID, account.Platform, *input.GroupIDs); err != nil {
+			if err := s.auditMixedChannelRisk(ctx, account.ID, account.Platform, *input.GroupIDs); err != nil {
 				return nil, err
 			}
 		}
@@ -910,6 +928,8 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OllamaCloudUsageSessionExtraKey)
 	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(updates, OllamaCloudUsageSnapshotExtraKey)
+	delete(updates, OpenCodeGoUsageAutoRefreshExtraKey)
+	delete(updates, OpenCodeGoUsageSnapshotExtraKey)
 	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -937,6 +957,8 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	delete(input.Extra, OllamaCloudUsageSessionExtraKey)
 	delete(input.Extra, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(input.Extra, OllamaCloudUsageSnapshotExtraKey)
+	delete(input.Extra, OpenCodeGoUsageAutoRefreshExtraKey)
+	delete(input.Extra, OpenCodeGoUsageSnapshotExtraKey)
 
 	if len(input.AccountIDs) == 0 && input.Filters != nil {
 		accountIDs, err := s.resolveBulkUpdateTargetIDs(ctx, input.Filters)
@@ -1036,14 +1058,15 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	// 预检查混合渠道风险：在任何写操作之前，若发现风险立即返回错误。
+	// 预检查混合渠道风险：在任何写操作之前扫描。跨平台绑定必须成功，风险仅记录
+	// 审计日志不再阻断；仓储读写等基础设施错误仍返回。
 	if needMixedChannelCheck {
 		for _, accountID := range input.AccountIDs {
 			platform := platformByID[accountID]
 			if platform == "" {
 				continue
 			}
-			if err := s.checkMixedChannelRisk(ctx, accountID, platform, *input.GroupIDs); err != nil {
+			if err := s.auditMixedChannelRisk(ctx, accountID, platform, *input.GroupIDs); err != nil {
 				return nil, err
 			}
 		}
@@ -1479,6 +1502,28 @@ func propagateAccountProxyToShadows(ctx context.Context, repo AccountRepository,
 	return nil
 }
 
+// auditMixedChannelRisk 在账号创建/更新/绑定保存路径上执行混合渠道扫描：
+// 发现混合渠道风险时记录中文结构化 slog.Warn 审计日志（仅含账号/分组标识与平台，
+// 不记录任何凭据），不再阻断跨平台绑定保存；仓储读写等基础设施错误仍返回给调用方。
+// 只读检查端点 CheckMixedChannelRisk 仍走 checkMixedChannelRisk 返回风险错误。
+func (s *adminServiceImpl) auditMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error {
+	err := s.checkMixedChannelRisk(ctx, currentAccountID, currentAccountPlatform, groupIDs)
+	if err == nil {
+		return nil
+	}
+	var mixedErr *MixedChannelError
+	if !errors.As(err, &mixedErr) {
+		return err
+	}
+	slog.Warn("跨平台账号绑定存在混合渠道风险，已放行保存",
+		"account_id", currentAccountID,
+		"group_id", mixedErr.GroupID,
+		"account_platform", mixedErr.CurrentPlatform,
+		"group_platform", mixedErr.OtherPlatform,
+	)
+	return nil
+}
+
 // checkMixedChannelRisk 检查分组中是否存在混合渠道（Antigravity + Anthropic）
 // 如果存在混合，返回错误提示用户确认
 func (s *adminServiceImpl) checkMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error {
@@ -1509,7 +1554,12 @@ func (s *adminServiceImpl) checkMixedChannelRisk(ctx context.Context, currentAcc
 
 			// 检测混合渠道
 			if currentPlatform != otherPlatform {
-				group, _ := s.groupRepo.GetByID(ctx, groupID)
+				// 分组信息用于审计日志字段，获取失败属于基础设施错误，
+				// 必须显式传播给调用方（保留错误链），不得吞掉后放行。
+				group, err := s.groupRepo.GetByID(ctx, groupID)
+				if err != nil {
+					return fmt.Errorf("获取分组 %d 信息用于混合渠道风险审计: %w", groupID, err)
+				}
 				groupName := fmt.Sprintf("Group %d", groupID)
 				if group != nil {
 					groupName = group.Name

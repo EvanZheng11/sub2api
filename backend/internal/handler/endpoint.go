@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -275,8 +277,32 @@ func InboundEndpointMiddleware() gin.HandlerFunc {
 		if path == "" {
 			path = c.FullPath()
 		}
-		c.Set(ctxKeyInboundEndpoint, NormalizeInboundEndpoint(path))
+		endpoint := NormalizeInboundEndpoint(path)
+		c.Set(ctxKeyInboundEndpoint, endpoint)
+		if c.Request != nil {
+			if protocol := inboundProtocolForEndpoint(endpoint); protocol != "" {
+				requestCtx := context.WithValue(c.Request.Context(), ctxkey.InboundProtocol, protocol)
+				c.Request = c.Request.WithContext(requestCtx)
+			}
+		}
 		c.Next()
+	}
+}
+
+func inboundProtocolForEndpoint(endpoint string) string {
+	switch endpoint {
+	case EndpointMessages:
+		return service.ContentModerationProtocolAnthropicMessages
+	case EndpointChatCompletions:
+		return service.ContentModerationProtocolOpenAIChat
+	case EndpointResponses, EndpointResponsesCompact, EndpointResponsesInputTokens:
+		return service.ContentModerationProtocolOpenAIResponses
+	case EndpointGeminiModels:
+		return service.ContentModerationProtocolGemini
+	case EndpointImagesGenerations, EndpointImagesEdits, EndpointImageTasks:
+		return service.ContentModerationProtocolOpenAIImages
+	default:
+		return ""
 	}
 }
 

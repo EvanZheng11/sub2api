@@ -152,12 +152,13 @@ func TestSchedulerFullRebuildCapturesAllRegistryTokensBeforeDBLoad(t *testing.T)
 	releaseDB := make(chan struct{})
 	var firstDB sync.Once
 	repo := &mockAccountRepoForPlatform{
-		listPlatformFunc: func(context.Context, string) ([]Account, error) {
+		// 绑定维度查询（设计 §3.3）：分组桶走 ListSchedulableByGroupID。
+		groupSchedulableFunc: func(context.Context, int64) ([]Account, error) {
 			firstDB.Do(func() {
 				close(dbStarted)
 				<-releaseDB
 			})
-			return []Account{{ID: 6101, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}}, nil
+			return []Account{{ID: 6101, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: first.GroupID}}}}, nil
 		},
 	}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, &retirementGroupRepo{groups: []Group{{ID: 61, Status: StatusActive}}}, &config.Config{
@@ -202,9 +203,11 @@ func TestSchedulerRebuildRetireAfterDBLoadFencesPublish(t *testing.T) {
 		<-releaseSet
 	}
 	repo := &mockAccountRepoForPlatform{
-		listPlatformFunc: func(context.Context, string) ([]Account, error) {
+		// 绑定维度查询（设计 §3.3）：分组桶走 ListSchedulableByGroupID，
+		// 由 groupSchedulableFunc 提供候选并在首次调用时发出 DB load 信号。
+		groupSchedulableFunc: func(_ context.Context, _ int64) ([]Account, error) {
 			close(dbReturned)
-			return []Account{{ID: 6201, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}}, nil
+			return []Account{{ID: 6201, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: bucket.GroupID}}}}, nil
 		},
 	}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
@@ -243,7 +246,7 @@ func TestSchedulerFallbackReturnsDBAccountsWhenBucketRetired(t *testing.T) {
 	cache := newRetirementRaceCache()
 	require.NoError(t, cache.RetireBucket(context.Background(), bucket))
 	repo := &mockAccountRepoForPlatform{
-		accounts: []Account{{ID: 6301, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}},
+		accounts: []Account{{ID: 6301, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: bucket.GroupID}}}},
 	}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
 		RunMode: config.RunModeStandard,

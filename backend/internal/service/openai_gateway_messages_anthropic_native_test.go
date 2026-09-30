@@ -4,9 +4,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -81,6 +83,132 @@ data: {"type":"message_stop"}
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:       io.NopCloser(strings.NewReader(sse)),
 	}
+}
+
+func nativeAnthropicEventsResponse(events ...string) *http.Response {
+	var b strings.Builder
+	for _, payload := range events {
+		fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", gjson.Get(payload, "type").String(), payload)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(b.String())),
+	}
+}
+
+const (
+	nativeAnthropicMessageStart  = `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"k3","content":[],"stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}`
+	nativeAnthropicMessageStop   = `{"type":"message_stop"}`
+	nativeAnthropicTerminalDelta = `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`
+	nativeAnthropicTextStart     = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`
+	nativeAnthropicTextDelta     = `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"first"}}`
+	nativeAnthropicTextStop      = `{"type":"content_block_stop","index":0}`
+)
+
+func TestNativeAnthropicChatStreamEmptyTerminalEventsFailoverWithoutCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name   string
+		events []string
+	}{
+		{name: "message_stop", events: []string{nativeAnthropicMessageStart, nativeAnthropicMessageStop}},
+		{name: "terminal_message_delta", events: []string{nativeAnthropicMessageStart, nativeAnthropicTerminalDelta}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"k3","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+			upstream := &httpUpstreamRecorder{resp: nativeAnthropicEventsResponse(tc.events...)}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+			_, err := svc.forwardChatCompletionsViaNativeAnthropic(
+				context.Background(), c, nativeAnthropicTestAccount(), body, "",
+			)
+
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.False(t, c.Writer.Written())
+			require.Empty(t, rec.Body.String())
+		})
+	}
+}
+
+func TestNativeAnthropicChatStreamToolOutputIsSemantic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"k3","stream":true,"messages":[{"role":"user","content":"查天气"}]}`)
+	toolStart := `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}`
+	toolDelta := `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"shanghai\"}"}}`
+	upstream := &httpUpstreamRecorder{resp: nativeAnthropicEventsResponse(
+		nativeAnthropicMessageStart,
+		toolStart,
+		toolDelta,
+		nativeAnthropicTextStop,
+		nativeAnthropicTerminalDelta,
+		nativeAnthropicMessageStop,
+	)}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	_, err := svc.forwardChatCompletionsViaNativeAnthropic(
+		context.Background(), c, nativeAnthropicTestAccount(), body, "",
+	)
+
+	require.NoError(t, err)
+	require.Contains(t, rec.Body.String(), "lookup")
+	require.Contains(t, rec.Body.String(), "shanghai")
+	require.Contains(t, rec.Body.String(), "[DONE]")
+}
+
+func TestNativeAnthropicChatStreamTerminalUsageAfterSemanticOutputIsCompatible(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"k3","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	upstream := &httpUpstreamRecorder{resp: nativeAnthropicEventsResponse(
+		nativeAnthropicMessageStart,
+		nativeAnthropicTextStart,
+		nativeAnthropicTextDelta,
+		nativeAnthropicTextStop,
+		nativeAnthropicTerminalDelta,
+	)}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	_, err := svc.forwardChatCompletionsViaNativeAnthropic(
+		context.Background(), c, nativeAnthropicTestAccount(), body, "",
+	)
+
+	require.NoError(t, err)
+	require.Contains(t, rec.Body.String(), `"first"`)
+	require.Contains(t, rec.Body.String(), "[DONE]")
+}
+
+func TestNativeAnthropicChatStreamTruncatedAfterFirstPacketDoesNotFailOver(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"k3","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	upstream := &httpUpstreamRecorder{resp: nativeAnthropicEventsResponse(
+		nativeAnthropicMessageStart,
+		nativeAnthropicTextStart,
+		nativeAnthropicTextDelta,
+	)}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	_, err := svc.forwardChatCompletionsViaNativeAnthropic(
+		context.Background(), c, nativeAnthropicTestAccount(), body, "",
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.Error(t, err)
+	require.False(t, errors.As(err, &failoverErr))
+	require.Contains(t, rec.Body.String(), `"first"`)
+	require.NotContains(t, rec.Body.String(), "[DONE]")
 }
 
 func TestNativeAnthropicPassthroughRecordsOutputConfigEffort(t *testing.T) {

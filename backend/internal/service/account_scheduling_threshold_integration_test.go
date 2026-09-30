@@ -77,7 +77,7 @@ func TestGatewayService_ListSchedulableAccounts_DoesNotFilterUnsupportedThreshol
 		rateLimitService: rateLimitService,
 	}
 
-	accounts, useMixed, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformKiro, false)
+	accounts, useMixed, _, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformKiro, false)
 
 	require.NoError(t, err)
 	require.False(t, useMixed)

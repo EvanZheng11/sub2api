@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -71,6 +72,15 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 
 	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if err := validateGPT61SolCompatRequest(body, upstreamModel); err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	if openai.IsGPT61SolModelSpelling(upstreamModel) && len(effectiveTools) > 0 {
+		err := fmt.Errorf("gpt-6.1-sol requires Responses for tool calls; this account only supports Chat Completions")
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
@@ -197,6 +207,8 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.ToolSearchDeclared = toolSearch
 	state.NamespaceTools = namespaceTools
 	clientDisconnected := false
+	semanticOutputStarted := false
+	var pendingEvents []apicompat.ResponsesStreamEvent
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
 		if clientDisconnected || len(events) == 0 {
@@ -227,10 +239,19 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	scan := s.scanCCStream(c, resp, "openai responses chat fallback", requestID, startTime, func(chunk *apicompat.ChatCompletionsChunk) {
 		events := apicompat.ChatCompletionsChunkToResponsesEvents(chunk, state)
 		s.cacheReasoningItemsFromEvents(events)
+		if !semanticOutputStarted {
+			pendingEvents = append(pendingEvents, events...)
+			if !chatChunkStartsResponsesOutput(chunk) {
+				return
+			}
+			semanticOutputStarted = true
+			events = pendingEvents
+			pendingEvents = nil
+		}
 		writeEvents(events)
 	})
 
-	if scan.Err != nil {
+	resultWithScan := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
 			UpstreamHeaders:             resp.Header,
@@ -244,23 +265,37 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			Stream:                      true,
 			Duration:                    time.Since(startTime),
 			FirstTokenMs:                scan.FirstTokenMs,
-		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
+		}
+	}
+
+	if scan.Err != nil {
+		if !semanticOutputStarted {
+			logger.L().Warn("openai responses chat fallback: stream ended before semantic output",
+				zap.Error(scan.Err),
+				zap.String("request_id", requestID),
+			)
+			return resultWithScan(), newOpenAIStreamFailoverError(resp, "stream ended before semantic output")
+		}
+		return resultWithScan(), fmt.Errorf("stream usage incomplete after semantic output: %w", scan.Err)
+	}
+	if !scan.SawDone {
+		logCCStreamMissingDoneSentinel("openai responses chat fallback", requestID)
+		if !semanticOutputStarted {
+			logger.L().Warn("openai responses chat fallback: stream ended without semantic output",
+				zap.String("request_id", requestID),
+			)
+			return resultWithScan(), newOpenAIStreamFailoverError(resp, "stream ended without semantic output")
+		}
+		return resultWithScan(), fmt.Errorf("stream ended after semantic output without [DONE]")
+	}
+	if !semanticOutputStarted {
+		logger.L().Warn("openai responses chat fallback: stream completed without semantic output",
+			zap.String("request_id", requestID),
+		)
+		return resultWithScan(), newOpenAIStreamFailoverError(resp, "stream completed without semantic output")
 	}
 	if err := state.ValidateToolCallArguments(); err != nil {
-		return &OpenAIForwardResult{
-			RequestID:                   requestID,
-			UpstreamHeaders:             resp.Header,
-			Usage:                       scan.Usage,
-			Model:                       originalModel,
-			BillingModel:                billingModel,
-			UpstreamModel:               upstreamModel,
-			ReasoningEffort:             reasoningEffort,
-			UpstreamResponseServiceTier: observedUpstreamResponseServiceTier(c),
-			ServiceTier:                 resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-			Stream:                      true,
-			Duration:                    time.Since(startTime),
-			FirstTokenMs:                scan.FirstTokenMs,
-		}, fmt.Errorf("invalid tool call arguments from upstream: %w", err)
+		return resultWithScan(), fmt.Errorf("invalid tool call arguments from upstream: %w", err)
 	}
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
@@ -275,24 +310,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			c.Writer.Flush()
 		}
 	}
-	if !scan.SawDone {
-		logCCStreamMissingDoneSentinel("openai responses chat fallback", requestID)
-	}
-
-	return &OpenAIForwardResult{
-		RequestID:                   requestID,
-		UpstreamHeaders:             resp.Header,
-		Usage:                       scan.Usage,
-		Model:                       originalModel,
-		BillingModel:                billingModel,
-		UpstreamModel:               upstreamModel,
-		ReasoningEffort:             reasoningEffort,
-		UpstreamResponseServiceTier: observedUpstreamResponseServiceTier(c),
-		ServiceTier:                 resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-		Stream:                      true,
-		Duration:                    time.Since(startTime),
-		FirstTokenMs:                scan.FirstTokenMs,
-	}, nil
+	return resultWithScan(), nil
 }
 
 func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool {
@@ -300,9 +318,59 @@ func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool 
 		return false
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta.Content != nil || choice.Delta.ReasoningContent != nil || len(choice.Delta.ToolCalls) > 0 {
+		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			return true
 		}
+		if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+			return true
+		}
+		if len(choice.Delta.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func newOpenAIStreamFailoverError(resp *http.Response, reason string) *UpstreamFailoverError {
+	var responseHeaders http.Header
+	if resp != nil {
+		responseHeaders = resp.Header.Clone()
+	}
+	return &UpstreamFailoverError{
+		StatusCode:       http.StatusBadGateway,
+		ResponseHeaders:  responseHeaders,
+		ResponseBody:     []byte(`{"error":{"type":"upstream_error","message":"Upstream stream ended before completion"}}`),
+		ClientStatusCode: http.StatusBadGateway,
+		ClientMessage:    "Upstream stream ended before completion",
+		Scope:            GatewayFailureScopeAccount,
+		Reason:           GatewayFailureReason(reason),
+	}
+}
+
+func anthropicEventHasSemanticOutput(event *apicompat.AnthropicStreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	switch event.Type {
+	case "content_block_start":
+		if event.ContentBlock == nil {
+			return false
+		}
+		switch event.ContentBlock.Type {
+		case "tool_use":
+			return true
+		case "text":
+			return event.ContentBlock.Text != ""
+		case "thinking", "redacted_thinking":
+			return event.ContentBlock.Thinking != ""
+		}
+	case "content_block_delta":
+		if event.Delta == nil {
+			return false
+		}
+		return event.Delta.Text != "" ||
+			event.Delta.Thinking != "" ||
+			event.Delta.PartialJSON != ""
 	}
 	return false
 }
@@ -431,15 +499,53 @@ func targetsDeepSeekAPIHost(account *Account) bool {
 	return strings.EqualFold(u.Hostname(), ds.Hostname())
 }
 
+// targetsOpenCodeZenUpstream 报告该账号上游是否是官方 OpenCode Zen / Go 网关。
+// platform=opencode_go 直接命中；其他平台按 base_url 主机判定，覆盖用 API Key
+// 直接把 openai 平台账号指向 opencode.ai 的接入方式。
+func targetsOpenCodeZenUpstream(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	if account.IsOpenCodeGo() {
+		return true
+	}
+	return isOfficialOpenCodeHost(account.GetOpenAIBaseURL())
+}
+
+// isDeepSeekCatalogModel 判定（剥掉 opencode 前缀后的）模型 ID 是否属于
+// DeepSeek 系列，例如 deepseek-v4-flash / deepseek-v4.1-flash / deepseek-chat。
+func isDeepSeekCatalogModel(model string) bool {
+	return strings.HasPrefix(normalizeOpenCodeGoModelID(model), "deepseek")
+}
+
+// requiresDeepSeekChatReasoning 报告该 Chat Completions 请求的上游是否按
+// DeepSeek thinking mode 语义校验 reasoning_content。
+//
+// DeepSeek 官方 API 直接命中。OpenCode Zen / Go 是转发型订阅网关：deepseek-*
+// 模型由 DeepSeek 实际承载，同一条 400 原文会被一字不差地回吐，所以按
+// 「官方 OpenCode 上游 + deepseek-* 模型」补一条判定。
+//
+// 不放宽成「任意上游的 deepseek-* 模型名」：占位符是写进请求体的额外字段，
+// 对没有这条约束的上游属于无谓改写，且可能触发未知字段校验。
+func requiresDeepSeekChatReasoning(account *Account, body []byte) bool {
+	if targetsDeepSeekAPIHost(account) {
+		return true
+	}
+	if !targetsOpenCodeZenUpstream(account) {
+		return false
+	}
+	return isDeepSeekCatalogModel(gjson.GetBytes(body, "model").String())
+}
+
 // ensureDeepSeekChatReasoningPlaceholders 给缺 reasoning_content 的 assistant
 // 消息补单个空格占位。DeepSeek thinking mode 要求历史里每条产生过思维的
 // assistant 消息都回传该字段，否则 400
 // "The `reasoning_content` in the thinking mode must be passed back to the API"。
 //
 // 桥接会从 summary / 缓存回注真实明文；这里只填仍为空的缺口，不覆盖已有内容。
-// 非 DeepSeek 上游原样返回（字节不变）。
+// 判定见 requiresDeepSeekChatReasoning，不命中的上游原样返回（字节不变）。
 func ensureDeepSeekChatReasoningPlaceholders(account *Account, body []byte) []byte {
-	if !targetsDeepSeekAPIHost(account) {
+	if !requiresDeepSeekChatReasoning(account, body) {
 		return body
 	}
 	messages := gjson.GetBytes(body, "messages")

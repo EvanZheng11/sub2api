@@ -44,6 +44,9 @@
           :rate-multiplier="group.rate_multiplier == null ? undefined : group.rate_multiplier"
           class="min-w-0 flex-1"
         />
+        <span class="shrink-0 text-[11px] text-gray-500 dark:text-gray-400">
+          {{ group.platform }}
+        </span>
         <span class="shrink-0 text-xs text-gray-400">{{ group.account_count || 0 }}</span>
       </label>
       <div
@@ -61,7 +64,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import GroupBadge from './GroupBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
-import type { Group, GroupPlatform } from '@/types'
+import type { Group } from '@/types'
 import { useAuthStore } from '@/stores'
 
 const { t } = useI18n()
@@ -70,8 +73,6 @@ const authStore = useAuthStore()
 interface Props {
   modelValue: number[]
   groups: (Group & { account_count?: number })[]
-  platform?: GroupPlatform // Optional platform filter
-  mixedScheduling?: boolean // For antigravity accounts: allow anthropic/gemini groups
   searchable?: boolean | 'auto'
 }
 
@@ -89,22 +90,11 @@ const isSearchable = computed(() => {
   return props.searchable
 })
 
-// Filter groups by platform if specified
+// 跨平台绑定由运行时能力检查负责，选择器只保留 simple 模式的 composite 规则。
 const filteredGroups = computed(() => {
   let result = authStore.isSimpleMode
     ? props.groups.filter((g) => g.platform !== 'composite')
     : props.groups
-  if (props.platform) {
-    // antigravity 账户启用混合调度后，可选择 anthropic/gemini 分组
-    if (props.platform === 'antigravity' && props.mixedScheduling) {
-      result = result.filter(
-        (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini' || g.platform === 'composite'
-      )
-    } else {
-      // 默认：只能选择同 platform 的分组；composite 分组可接收任意具体平台账号
-      result = result.filter((g) => g.platform === props.platform || g.platform === 'composite')
-    }
-  }
   if (isSearchable.value && searchText.value) {
     const q = searchText.value.toLowerCase()
     result = result.filter(

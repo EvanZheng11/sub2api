@@ -41,12 +41,14 @@ func newLoadAwareRestrictionFixture(t *testing.T, restrict bool, sessionBindings
 		accounts: []Account{
 			{
 				ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5,
+				AccountGroups: []AccountGroup{{GroupID: groupID}},
 				Credentials: map[string]any{
 					"model_mapping": map[string]any{"claude-fable-5-1": "claude-fable-5-1"},
 				},
 			},
 			{
 				ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5,
+				AccountGroups: []AccountGroup{{GroupID: groupID}},
 				Credentials: map[string]any{
 					"model_mapping": map[string]any{"claude-fable-5-1": "claude-sonnet-4-6"},
 				},

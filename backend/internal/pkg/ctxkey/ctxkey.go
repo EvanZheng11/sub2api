@@ -32,6 +32,10 @@ const (
 	// Platform 当前请求最终命中的平台（用于统一请求链路日志字段）。
 	Platform Key = "ctx_platform"
 
+	// InboundProtocol 当前请求的入站协议，由网关入口 middleware 设置。
+	// 它表示客户端请求协议，不表示上游账号的 api_protocol。
+	InboundProtocol Key = "ctx_inbound_protocol"
+
 	// AccountID 当前请求最终命中的账号 ID（用于统一请求链路日志字段）。
 	AccountID Key = "ctx_account_id"
 
