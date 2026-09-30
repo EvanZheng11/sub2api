@@ -328,7 +328,6 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
@@ -339,6 +338,19 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	semanticOutputStarted := false
+	responseCommitted := false
+	sawMessageStop := false
+	sawTerminalMessageDelta := false
+	var pendingEvents []apicompat.ResponsesStreamEvent
+
+	commitResponse := func() {
+		if responseCommitted {
+			return
+		}
+		c.Writer.WriteHeader(http.StatusOK)
+		responseCommitted = true
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -385,6 +397,12 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			zap.String("request_id", requestID),
 			zap.Duration("interval", streamInterval),
 		)
+		if !semanticOutputStarted {
+			return resultWithUsage(), fmt.Errorf(
+				"stream data interval timeout: %w",
+				newOpenAIStreamFailoverError(resp, "stream idle before semantic output"),
+			)
+		}
 		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 	}
 
@@ -393,14 +411,13 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	// output_tokens 只在末尾 message_delta 携带，提前退出会把整段生成记成 ~1
 	// token，payg 上游照常计费而平台漏记。状态机照常推进以保证 finalize 一致。
 	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) {
-		if firstChunk {
-			firstChunk = false
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-		}
-
-		if event.Type == "message_delta" && event.Usage != nil {
-			mergeAnthropicUsage(&usage, *event.Usage)
+		if event.Type == "message_delta" {
+			if event.Usage != nil {
+				mergeAnthropicUsage(&usage, *event.Usage)
+			}
+			if event.Delta != nil && event.Delta.StopReason != "" {
+				sawTerminalMessageDelta = true
+			}
 		}
 		if event.Type == "message_start" && event.Message != nil {
 			mergeAnthropicUsage(&usage, event.Message.Usage)
@@ -413,9 +430,32 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		normalizeAnthropicEventUsageForResponses(event, usage)
 
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
+		if event.Type == "message_stop" {
+			sawMessageStop = true
+		}
 		if clientDisconnected {
 			return
 		}
+		if !semanticOutputStarted {
+			pendingEvents = append(pendingEvents, events...)
+			if !anthropicEventHasSemanticOutput(event) && event.Type != "message_stop" {
+				return
+			}
+			if anthropicEventHasSemanticOutput(event) {
+				semanticOutputStarted = true
+			}
+			if semanticOutputStarted && firstChunk {
+				firstChunk = false
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			events = pendingEvents
+			pendingEvents = nil
+		}
+		if len(events) == 0 {
+			return
+		}
+		commitResponse()
 		for _, evt := range events {
 			payload, err := json.Marshal(evt)
 			if err != nil {
@@ -434,9 +474,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 				}
 			}
 		}
-		if len(events) > 0 {
-			c.Writer.Flush()
-		}
+		c.Writer.Flush()
 	}
 
 	for {
@@ -473,10 +511,25 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		processAnthropicEvent(&event)
 	}
 
+	if !sawMessageStop && !sawTerminalMessageDelta {
+		if !semanticOutputStarted {
+			logger.L().Warn("openai responses via native anthropic stream: stream ended before semantic output",
+				zap.String("request_id", requestID),
+			)
+			return resultWithUsage(), newOpenAIStreamFailoverError(resp, "stream ended before message_stop")
+		}
+		return resultWithUsage(), fmt.Errorf("stream ended after semantic output before message_stop")
+	}
+	if !sawMessageStop && semanticOutputStarted {
+		return resultWithUsage(), fmt.Errorf("stream ended after semantic output before message_stop")
+	}
+
 	// Finalize state machine（客户端已断开时仍推进，保证 usage 汇总完整；仅在
 	// 客户端仍连接时写出）。终态帧与逐事件路径一致过工具名反转与客户端工具还原，
 	// 避免流截断时终态帧携带改写后的工具名。
 	if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 && !clientDisconnected {
+		finalEvents = append(pendingEvents, finalEvents...)
+		commitResponse()
 		wrote := false
 		for _, evt := range finalEvents {
 			payload, err := json.Marshal(evt)

@@ -207,6 +207,8 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.ToolSearchDeclared = toolSearch
 	state.NamespaceTools = namespaceTools
 	clientDisconnected := false
+	semanticOutputStarted := false
+	var pendingEvents []apicompat.ResponsesStreamEvent
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
 		if clientDisconnected || len(events) == 0 {
@@ -237,10 +239,19 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	scan := s.scanCCStream(c, resp, "openai responses chat fallback", requestID, startTime, func(chunk *apicompat.ChatCompletionsChunk) {
 		events := apicompat.ChatCompletionsChunkToResponsesEvents(chunk, state)
 		s.cacheReasoningItemsFromEvents(events)
+		if !semanticOutputStarted {
+			pendingEvents = append(pendingEvents, events...)
+			if !chatChunkStartsResponsesOutput(chunk) {
+				return
+			}
+			semanticOutputStarted = true
+			events = pendingEvents
+			pendingEvents = nil
+		}
 		writeEvents(events)
 	})
 
-	if scan.Err != nil {
+	resultWithScan := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
 			UpstreamHeaders:             resp.Header,
@@ -254,23 +265,37 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			Stream:                      true,
 			Duration:                    time.Since(startTime),
 			FirstTokenMs:                scan.FirstTokenMs,
-		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
+		}
+	}
+
+	if scan.Err != nil {
+		if !semanticOutputStarted {
+			logger.L().Warn("openai responses chat fallback: stream ended before semantic output",
+				zap.Error(scan.Err),
+				zap.String("request_id", requestID),
+			)
+			return resultWithScan(), newOpenAIStreamFailoverError(resp, "stream ended before semantic output")
+		}
+		return resultWithScan(), fmt.Errorf("stream usage incomplete after semantic output: %w", scan.Err)
+	}
+	if !scan.SawDone {
+		logCCStreamMissingDoneSentinel("openai responses chat fallback", requestID)
+		if !semanticOutputStarted {
+			logger.L().Warn("openai responses chat fallback: stream ended without semantic output",
+				zap.String("request_id", requestID),
+			)
+			return resultWithScan(), newOpenAIStreamFailoverError(resp, "stream ended without semantic output")
+		}
+		return resultWithScan(), fmt.Errorf("stream ended after semantic output without [DONE]")
+	}
+	if !semanticOutputStarted {
+		logger.L().Warn("openai responses chat fallback: stream completed without semantic output",
+			zap.String("request_id", requestID),
+		)
+		return resultWithScan(), newOpenAIStreamFailoverError(resp, "stream completed without semantic output")
 	}
 	if err := state.ValidateToolCallArguments(); err != nil {
-		return &OpenAIForwardResult{
-			RequestID:                   requestID,
-			UpstreamHeaders:             resp.Header,
-			Usage:                       scan.Usage,
-			Model:                       originalModel,
-			BillingModel:                billingModel,
-			UpstreamModel:               upstreamModel,
-			ReasoningEffort:             reasoningEffort,
-			UpstreamResponseServiceTier: observedUpstreamResponseServiceTier(c),
-			ServiceTier:                 resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-			Stream:                      true,
-			Duration:                    time.Since(startTime),
-			FirstTokenMs:                scan.FirstTokenMs,
-		}, fmt.Errorf("invalid tool call arguments from upstream: %w", err)
+		return resultWithScan(), fmt.Errorf("invalid tool call arguments from upstream: %w", err)
 	}
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
@@ -285,24 +310,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			c.Writer.Flush()
 		}
 	}
-	if !scan.SawDone {
-		logCCStreamMissingDoneSentinel("openai responses chat fallback", requestID)
-	}
-
-	return &OpenAIForwardResult{
-		RequestID:                   requestID,
-		UpstreamHeaders:             resp.Header,
-		Usage:                       scan.Usage,
-		Model:                       originalModel,
-		BillingModel:                billingModel,
-		UpstreamModel:               upstreamModel,
-		ReasoningEffort:             reasoningEffort,
-		UpstreamResponseServiceTier: observedUpstreamResponseServiceTier(c),
-		ServiceTier:                 resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-		Stream:                      true,
-		Duration:                    time.Since(startTime),
-		FirstTokenMs:                scan.FirstTokenMs,
-	}, nil
+	return resultWithScan(), nil
 }
 
 func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool {
@@ -310,9 +318,59 @@ func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool 
 		return false
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta.Content != nil || choice.Delta.ReasoningContent != nil || len(choice.Delta.ToolCalls) > 0 {
+		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			return true
 		}
+		if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+			return true
+		}
+		if len(choice.Delta.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func newOpenAIStreamFailoverError(resp *http.Response, reason string) *UpstreamFailoverError {
+	var responseHeaders http.Header
+	if resp != nil {
+		responseHeaders = resp.Header.Clone()
+	}
+	return &UpstreamFailoverError{
+		StatusCode:       http.StatusBadGateway,
+		ResponseHeaders:  responseHeaders,
+		ResponseBody:     []byte(`{"error":{"type":"upstream_error","message":"Upstream stream ended before completion"}}`),
+		ClientStatusCode: http.StatusBadGateway,
+		ClientMessage:    "Upstream stream ended before completion",
+		Scope:            GatewayFailureScopeAccount,
+		Reason:           GatewayFailureReason(reason),
+	}
+}
+
+func anthropicEventHasSemanticOutput(event *apicompat.AnthropicStreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	switch event.Type {
+	case "content_block_start":
+		if event.ContentBlock == nil {
+			return false
+		}
+		switch event.ContentBlock.Type {
+		case "tool_use":
+			return true
+		case "text":
+			return event.ContentBlock.Text != ""
+		case "thinking", "redacted_thinking":
+			return event.ContentBlock.Thinking != ""
+		}
+	case "content_block_delta":
+		if event.Delta == nil {
+			return false
+		}
+		return event.Delta.Text != "" ||
+			event.Delta.Thinking != "" ||
+			event.Delta.PartialJSON != ""
 	}
 	return false
 }
