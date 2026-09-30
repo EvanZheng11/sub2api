@@ -208,6 +208,30 @@ func TestSelectAccountForModelWithPlatform_MixedSchedulingUnchanged(t *testing.T
 	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 }
 
+// TestSelectAccountWithMixedScheduling_GeminiRejectsAntigravityUpstream
+// gemini 混合调度只允许 Antigravity OAuth，且不改变 anthropic 对 Upstream 的既有资格。
+func TestSelectAccountWithMixedScheduling_GeminiRejectsAntigravityUpstream(t *testing.T) {
+	groupID := int64(23)
+	svc, _ := newBindingSchedulingTestService([]Account{
+		{ID: 1, Platform: PlatformAntigravity, Type: AccountTypeUpstream, Priority: 1, Status: StatusActive, Schedulable: true,
+			Extra:         map[string]any{"mixed_scheduling": true},
+			AccountGroups: []AccountGroup{{GroupID: groupID}}},
+		{ID: 2, Platform: PlatformAntigravity, Type: AccountTypeOAuth, Priority: 2, Status: StatusActive, Schedulable: true,
+			Extra:         map[string]any{"mixed_scheduling": true},
+			AccountGroups: []AccountGroup{{GroupID: groupID}}},
+	})
+
+	ctx := bindingGroupContext(svc, groupID, PlatformGemini)
+	acc, err := svc.selectAccountWithMixedScheduling(ctx, &groupID, "", "", nil, PlatformGemini)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), acc.ID, "gemini 混合调度不得选择 antigravity upstream")
+
+	anthropicCtx := bindingGroupContext(svc, groupID, PlatformAnthropic)
+	acc, err = svc.selectAccountWithMixedScheduling(anthropicCtx, &groupID, "", "", nil, PlatformAnthropic)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), acc.ID, "anthropic 混合调度应保持支持 antigravity upstream")
+}
+
 // TestListSchedulableAccounts_UngroupedPathKeepsPlatformFilter 无分组 API key 路径
 // 没有绑定关系，必须继续按账号平台过滤（opencode_go 账号不得进入 anthropic 无分组候选）。
 func TestListSchedulableAccounts_UngroupedPathKeepsPlatformFilter(t *testing.T) {

@@ -78,8 +78,9 @@ func TestSupportsBindingPlatformNormalization(t *testing.T) {
 // TestBindingCapabilityAllowsAntigravitySwitch antigravity 账号承接
 // anthropic/gemini 分组时必须打开 IsMixedSchedulingEnabled（设计 §3.4）。
 func TestBindingCapabilityAllowsAntigravitySwitch(t *testing.T) {
-	mixedOn := &Account{Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": true}}
-	mixedOff := &Account{Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": false}}
+	mixedOn := &Account{Platform: PlatformAntigravity, Type: AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": true}}
+	mixedOff := &Account{Platform: PlatformAntigravity, Type: AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": false}}
+	upstream := &Account{Platform: PlatformAntigravity, Type: AccountTypeUpstream, Extra: map[string]any{"mixed_scheduling": true}}
 	native := &Account{Platform: PlatformAnthropic}
 
 	if !bindingCapabilityAllows(PlatformAnthropic, mixedOn) {
@@ -87,6 +88,12 @@ func TestBindingCapabilityAllowsAntigravitySwitch(t *testing.T) {
 	}
 	if bindingCapabilityAllows(PlatformAnthropic, mixedOff) {
 		t.Fatal("mixed_scheduling 关闭的 antigravity 账号不应承接 anthropic 分组")
+	}
+	if !bindingCapabilityAllows(PlatformAnthropic, upstream) {
+		t.Fatal("anthropic 分组应保持支持 antigravity upstream 账号")
+	}
+	if bindingCapabilityAllows(PlatformGemini, upstream) {
+		t.Fatal("gemini 分组不应承接 antigravity upstream 账号")
 	}
 	if !bindingCapabilityAllows(PlatformAntigravity, &Account{Platform: PlatformAntigravity}) {
 		t.Fatal("antigravity 分组应可承接 antigravity 账号")
@@ -107,10 +114,10 @@ func TestBindingCapabilityAllowsAntigravitySwitch(t *testing.T) {
 // 值执行，防止原始值绕过 IsMixedSchedulingEnabled 检查（Task 2 审查修复）。
 func TestBindingCapabilityAllowsAntigravityNormalization(t *testing.T) {
 	mixedOn := func(platform string) *Account {
-		return &Account{Platform: platform, Extra: map[string]any{"mixed_scheduling": true}}
+		return &Account{Platform: platform, Type: AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": true}}
 	}
 	mixedOff := func(platform string) *Account {
-		return &Account{Platform: platform, Extra: map[string]any{"mixed_scheduling": false}}
+		return &Account{Platform: platform, Type: AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": false}}
 	}
 
 	cases := []struct {
@@ -144,24 +151,25 @@ func TestBindingCapabilityAllowsAntigravityNormalization(t *testing.T) {
 func TestFilterAccountsByBindingCapability(t *testing.T) {
 	accounts := []Account{
 		{ID: 1, Platform: PlatformAnthropic},
-		{ID: 2, Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": true}},
+		{ID: 2, Platform: PlatformAntigravity, Type: AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": true}},
 		{ID: 3, Platform: PlatformOpenAI},
-		{ID: 4, Platform: PlatformAntigravity, Extra: map[string]any{"mixed_scheduling": false}},
+		{ID: 4, Platform: PlatformAntigravity, Type: AccountTypeOAuth, Extra: map[string]any{"mixed_scheduling": false}},
 		{ID: 5, Platform: PlatformAnthropic},
+		{ID: 6, Platform: PlatformAntigravity, Type: AccountTypeUpstream, Extra: map[string]any{"mixed_scheduling": true}},
 	}
 
 	kept := filterAccountsByBindingCapability(accounts, PlatformAnthropic)
-	if len(kept) != 3 {
-		t.Fatalf("anthropic 分组候选应保留 3 个账号，实际保留 %d 个：%+v", len(kept), kept)
+	if len(kept) != 4 {
+		t.Fatalf("anthropic 分组候选应保留 4 个账号，实际保留 %d 个：%+v", len(kept), kept)
 	}
-	wantIDs := []int64{1, 2, 5}
+	wantIDs := []int64{1, 2, 5, 6}
 	for i, want := range wantIDs {
 		if kept[i].ID != want {
 			t.Fatalf("保留顺序不匹配：位置 %d 期望账号 %d，实际 %d", i, want, kept[i].ID)
 		}
 	}
 
-	// gemini 分组仅保留 mixed_scheduling 开启的 antigravity 账号（ID 2）。
+	// gemini 分组仅保留 OAuth 类型且开启 mixed_scheduling 的 antigravity 账号（ID 2）。
 	keptGemini := filterAccountsByBindingCapability(accounts, PlatformGemini)
 	if len(keptGemini) != 1 || keptGemini[0].ID != 2 {
 		t.Fatalf("gemini 分组应仅保留 ID 2 的 antigravity 账号，实际保留：%+v", keptGemini)

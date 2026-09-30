@@ -44,7 +44,8 @@ func SupportsBinding(inboundPlatform, accountPlatform, apiProtocol string) bool 
 }
 
 // bindingCapabilityAllows 在 SupportsBinding 之上叠加账号级资格：
-// antigravity 账号承接 anthropic/gemini 分组时必须启用 mixed_scheduling。
+// antigravity 账号承接 anthropic/gemini 分组时必须启用 mixed_scheduling；
+// gemini 分组的 antigravity 混合入站仅支持 OAuth 账号。
 // 判定统一使用规范化后的平台值，避免大小写/首尾空白绕过 mixed_scheduling 检查。
 func bindingCapabilityAllows(platform string, acc *Account) bool {
 	if acc == nil {
@@ -53,6 +54,12 @@ func bindingCapabilityAllows(platform string, acc *Account) bool {
 	groupPlatform := normalizePlatformToken(platform)
 	accountPlatform := normalizePlatformToken(acc.Platform)
 	if !SupportsBinding(groupPlatform, accountPlatform, acc.GetAPIProtocol()) {
+		return false
+	}
+	if groupPlatform == PlatformGemini &&
+		accountPlatform == PlatformAntigravity &&
+		acc.Type == AccountTypeUpstream {
+		// Gemini 混合入站的 Chat 兼容转发只支持 Antigravity OAuth。
 		return false
 	}
 	if accountPlatform == PlatformAntigravity && accountPlatform != groupPlatform {
@@ -79,7 +86,8 @@ func filterAccountsByBindingCapability(accounts []Account, platform string) []Ac
 		slog.Debug("binding_capability_skip",
 			"group_platform", platform,
 			"account_id", accounts[i].ID,
-			"account_platform", accounts[i].Platform)
+			"account_platform", accounts[i].Platform,
+			"account_type", accounts[i].Type)
 	}
 	return kept
 }

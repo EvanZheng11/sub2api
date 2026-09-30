@@ -232,7 +232,11 @@ func (s *SchedulerSnapshotService) ListSchedulableAccountsWithDiagnostics(ctx co
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return derefAccounts(cached), useMixed, nil, nil
+			accounts := derefAccounts(cached)
+			if groupID != nil || useMixed {
+				accounts = filterAccountsByBindingCapability(accounts, platform)
+			}
+			return accounts, useMixed, nil, nil
 		}
 		token, err := s.cache.CaptureBucketWriteToken(ctx, bucket)
 		if ctxErr := ctx.Err(); ctxErr != nil {
