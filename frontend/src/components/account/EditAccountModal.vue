@@ -3045,8 +3045,6 @@
       <GroupSelector
         v-model="form.group_ids"
         :groups="selectableGroups"
-        :platform="account?.platform"
-        :mixed-scheduling="mixedScheduling"
         data-tour="account-form-groups"
       />
 

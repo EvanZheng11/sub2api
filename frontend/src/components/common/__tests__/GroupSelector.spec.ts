@@ -15,9 +15,30 @@ const groups = [
   { id: 2, name: 'Composite', platform: 'composite', status: 'active' }
 ] as any
 
+const crossPlatformGroups = [
+  { id: 11, name: 'AnthropicGroup', platform: 'anthropic', status: 'active' },
+  { id: 12, name: 'OpenAIGroup', platform: 'openai', status: 'active' },
+  { id: 13, name: 'OpenCodeGroup', platform: 'opencode_go', status: 'active' }
+] as any
+
 const mountSelector = (modelValue: number[] = []) => mount(GroupSelector, {
   props: { modelValue, groups },
-  global: { stubs: { GroupBadge: { props: ['name'], template: '<span>{{ name }}</span>' }, Icon: true } }
+  global: {
+    stubs: {
+      GroupBadge: { props: ['name', 'platform'], template: '<span>{{ name }} ({{ platform }})</span>' },
+      Icon: true
+    }
+  }
+})
+
+const mountCrossPlatformSelector = (modelValue: number[] = []) => mount(GroupSelector, {
+  props: { modelValue, groups: crossPlatformGroups, platform: 'openai' } as any,
+  global: {
+    stubs: {
+      GroupBadge: { props: ['name', 'platform'], template: '<span>{{ name }} ({{ platform }})</span>' },
+      Icon: true
+    }
+  }
 })
 
 describe('GroupSelector simple-mode binding policy', () => {
@@ -33,6 +54,16 @@ describe('GroupSelector simple-mode binding policy', () => {
   it('keeps composite groups available in advanced mode', () => {
     const wrapper = mountSelector()
     expect(wrapper.text()).toContain('Composite')
+  })
+
+  it('任意平台账号可选任意平台分组并显示分组实际平台', () => {
+    const wrapper = mountCrossPlatformSelector()
+    const checkboxes = wrapper.findAll('input[type="checkbox"]')
+
+    expect(checkboxes).toHaveLength(3)
+    expect(wrapper.text()).toContain('AnthropicGroup (anthropic)')
+    expect(wrapper.text()).toContain('OpenAIGroup (openai)')
+    expect(wrapper.text()).toContain('OpenCodeGroup (opencode_go)')
   })
 
   it('cleans hidden historical composite IDs while preserving visible selections', () => {

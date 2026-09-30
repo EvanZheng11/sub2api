@@ -3529,8 +3529,6 @@
         <GroupSelector
           v-model="form.group_ids"
           :groups="groups"
-          :platform="form.platform"
-          :mixed-scheduling="mixedScheduling"
           data-tour="account-form-groups"
         />
       </div>
