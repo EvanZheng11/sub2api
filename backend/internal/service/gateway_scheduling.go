@@ -220,12 +220,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] load-aware enabled: group_id=%v model=%s session=%s platform=%s", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), platform)
 	}
 
-	accounts, useMixed, err := s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+	accounts, useMixed, bindingCandidates, err := s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 	if err != nil {
 		return nil, err
 	}
 	if len(accounts) == 0 {
-		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel); bindingErr != nil {
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel, bindingCandidates); bindingErr != nil {
 			return nil, bindingErr
 		}
 		return nil, ErrNoAvailableAccounts
@@ -705,7 +705,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				"total_accounts", len(accounts))
 			return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 		}
-		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel); bindingErr != nil {
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel, bindingCandidates); bindingErr != nil {
 			return nil, bindingErr
 		}
 		return nil, ErrNoAvailableAccounts
@@ -1017,9 +1017,9 @@ func (s *GatewayService) resolvePlatform(ctx context.Context, groupID *int64, gr
 	return PlatformAnthropic, false, nil
 }
 
-func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, []Account, error) {
 	if s.schedulerSnapshot != nil {
-		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+		accounts, useMixed, bindingCandidates, err := s.schedulerSnapshot.ListSchedulableAccountsWithDiagnostics(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
 			accounts = s.filterAccountsBySchedulingThreshold(ctx, accounts)
 			if platform == PlatformGrok || strings.EqualFold(platform, PlatformGrok) {
@@ -1042,13 +1042,14 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				}
 			}
 		}
-		return accounts, useMixed, err
+		return accounts, useMixed, bindingCandidates, err
 	}
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	if useMixed {
 		platforms := []string{platform, PlatformAntigravity}
 		var accounts []Account
 		var err error
+		var bindingCandidates []Account
 		rawCount := 0
 		if groupID != nil {
 			// 绑定维度查询（设计 §3.3）：分组候选集由 account_groups 绑定关系决定，
@@ -1056,6 +1057,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 			accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
 			rawCount = len(accounts)
 			if err == nil {
+				bindingCandidates = accounts
 				accounts = filterAccountsByBindingCapability(accounts, platform)
 			}
 		} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -1070,7 +1072,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				"group_id", derefGroupID(groupID),
 				"platform", platform,
 				"error", err)
-			return nil, useMixed, err
+			return nil, useMixed, nil, err
 		}
 		filtered := accounts
 		if groupID == nil {
@@ -1100,11 +1102,12 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 					"tls_fingerprint", acc.IsTLSFingerprintEnabled())
 			}
 		}
-		return s.filterAccountsBySchedulingThreshold(ctx, filtered), useMixed, nil
+		return s.filterAccountsBySchedulingThreshold(ctx, filtered), useMixed, bindingCandidates, nil
 	}
 
 	var accounts []Account
 	var err error
+	var bindingCandidates []Account
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
 	} else if groupID != nil {
@@ -1112,6 +1115,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		// "账号平台 == 分组平台"做 SQL 过滤；平台能力改由内存能力矩阵判定。
 		accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
 		if err == nil {
+			bindingCandidates = accounts
 			accounts = filterAccountsByBindingCapability(accounts, platform)
 		}
 		// 分组内无候选则返回空列表，由上层处理错误，不再回退到全平台查询
@@ -1123,7 +1127,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 			"group_id", derefGroupID(groupID),
 			"platform", platform,
 			"error", err)
-		return nil, useMixed, err
+		return nil, useMixed, nil, err
 	}
 	slog.Debug("account_scheduling_list_single",
 		"group_id", derefGroupID(groupID),
@@ -1144,14 +1148,14 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	if platform == PlatformGrok || strings.EqualFold(platform, PlatformGrok) {
 		accounts = s.filterGrokFreeQuotaAccountsForGateway(ctx, accounts)
 	}
-	return accounts, useMixed, nil
+	return accounts, useMixed, bindingCandidates, nil
 }
 
 // IsSingleAntigravityAccountGroup 检查指定分组是否只有一个 antigravity 平台的可调度账号。
 // 用于 Handler 层在首次请求时提前设置 SingleAccountRetry context，
 // 避免单账号分组收到 503 时错误地设置模型限流标记导致后续请求连续快速失败。
 func (s *GatewayService) IsSingleAntigravityAccountGroup(ctx context.Context, groupID *int64) bool {
-	accounts, _, err := s.listSchedulableAccounts(ctx, groupID, PlatformAntigravity, true)
+	accounts, _, _, err := s.listSchedulableAccounts(ctx, groupID, PlatformAntigravity, true)
 	if err != nil {
 		return false
 	}
@@ -1921,6 +1925,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 
 	var accounts []Account
+	var bindingCandidates []Account
 	accountsLoaded := false
 
 	// ============ Model Routing (legacy path): apply before sticky session ============
@@ -1960,7 +1965,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			hasForcePlatform = false
 		}
 		var err error
-		accounts, _, err = s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+		accounts, _, bindingCandidates, err = s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err != nil {
 			return nil, fmt.Errorf("query accounts failed: %w", err)
 		}
@@ -2080,7 +2085,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			hasForcePlatform = false
 		}
 		var err error
-		accounts, _, err = s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+		accounts, _, bindingCandidates, err = s.listSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err != nil {
 			return nil, fmt.Errorf("query accounts failed: %w", err)
 		}
@@ -2157,7 +2162,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 
 	if selected == nil {
-		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel); bindingErr != nil {
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, platform, requestedModel, bindingCandidates); bindingErr != nil {
 			return nil, bindingErr
 		}
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, false)
@@ -2190,6 +2195,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	}
 
 	var accounts []Account
+	var bindingCandidates []Account
 	accountsLoaded := false
 
 	// ============ Model Routing (legacy path): apply before sticky session ============
@@ -2225,7 +2231,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 		// 2) Select an account from the routed candidates.
 		var err error
-		accounts, _, err = s.listSchedulableAccounts(ctx, groupID, nativePlatform, false)
+		accounts, _, bindingCandidates, err = s.listSchedulableAccounts(ctx, groupID, nativePlatform, false)
 		if err != nil {
 			return nil, fmt.Errorf("query accounts failed: %w", err)
 		}
@@ -2347,7 +2353,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	// 2. 获取可调度账号列表
 	if !accountsLoaded {
 		var err error
-		accounts, _, err = s.listSchedulableAccounts(ctx, groupID, nativePlatform, false)
+		accounts, _, bindingCandidates, err = s.listSchedulableAccounts(ctx, groupID, nativePlatform, false)
 		if err != nil {
 			return nil, fmt.Errorf("query accounts failed: %w", err)
 		}
@@ -2427,7 +2433,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	}
 
 	if selected == nil {
-		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, nativePlatform, requestedModel); bindingErr != nil {
+		if bindingErr := s.bindingUnsupportedSelectionError(ctx, groupID, nativePlatform, requestedModel, bindingCandidates); bindingErr != nil {
 			return nil, bindingErr
 		}
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, nativePlatform, accounts, excludedIDs, true)
@@ -2467,26 +2473,29 @@ type selectionFailureDiagnosis struct {
 	Detail   string
 }
 
+func inboundProtocolFromContext(ctx context.Context) string {
+	if protocol, ok := ctx.Value(ctxkey.InboundProtocol).(string); ok && strings.TrimSpace(protocol) != "" {
+		return strings.TrimSpace(protocol)
+	}
+	return "unknown"
+}
+
 // bindingUnsupportedSelectionError 在分组候选全部被绑定能力矩阵排除时，构造明确的
 // "分组平台 × 账号平台无适配器"错误（设计 §3.2/§6），并记录 binding_capability_unsupported
 // Warn 日志；返回 nil 表示失败原因不是绑定能力不匹配，调用方沿用既有错误文案与分类。
 //
-// 候选列表在查询阶段已按能力矩阵过滤，因此要报出被排除的账号平台，必须再按分组绑定关系
-// 回查一次。回查只发生在选号失败的路径上；无分组 API key 没有绑定关系，保持既有行为。
-func (s *GatewayService) bindingUnsupportedSelectionError(ctx context.Context, groupID *int64, platform, requestedModel string) error {
-	if s == nil || s.accountRepo == nil || groupID == nil {
-		return nil
-	}
-	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
-	if err != nil || len(accounts) == 0 {
+// rawCandidates 必须来自同一次候选查询；快照命中且没有原始候选时保持通用错误，
+// 不得为了补诊断在失败路径再次查询数据库。
+func (s *GatewayService) bindingUnsupportedSelectionError(ctx context.Context, groupID *int64, platform, requestedModel string, rawCandidates []Account) error {
+	if s == nil || groupID == nil || len(rawCandidates) == 0 {
 		return nil
 	}
 
 	allowed := 0
-	skipped := make([]string, 0, len(accounts))
-	seen := make(map[string]struct{}, len(accounts))
-	for i := range accounts {
-		acc := &accounts[i]
+	skipped := make([]string, 0, len(rawCandidates))
+	seen := make(map[string]struct{}, len(rawCandidates))
+	for i := range rawCandidates {
+		acc := &rawCandidates[i]
 		if bindingCapabilityAllows(platform, acc) {
 			allowed++
 			continue
@@ -2520,7 +2529,8 @@ func (s *GatewayService) bindingUnsupportedSelectionError(ctx context.Context, g
 		"group_id", derefGroupID(groupID),
 		"group_platform", platform,
 		"account_platform", strings.Join(skipped, ","),
-		"model", requestedModel)
+		"model", requestedModel,
+		"inbound_protocol", inboundProtocolFromContext(ctx))
 
 	return fmt.Errorf("%w: group platform %q has no adapter for account platform %s (model: %s)",
 		ErrNoAvailableAccounts, platform, strings.Join(quoted, ", "), requestedModel)

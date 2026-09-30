@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
 
@@ -160,7 +161,7 @@ func TestSelectAccountForModelWithPlatform_OpenAIxOpenCode(t *testing.T) {
 // 同时记录 binding_capability_unsupported Warn 且不得泄漏账号凭据（设计 §3.2/§6）。
 func TestSelectAccountForModelWithPlatform_NoAdapterError(t *testing.T) {
 	logs := captureServiceLogs(t)
-	svc, _ := newBindingSchedulingTestService([]Account{
+	svc, repo := newBindingSchedulingTestService([]Account{
 		{ID: 5, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
 			Credentials:   map[string]any{"api_key": "sk-binding-secret-must-not-be-logged"},
 			AccountGroups: []AccountGroup{{GroupID: 14}}},
@@ -170,6 +171,7 @@ func TestSelectAccountForModelWithPlatform_NoAdapterError(t *testing.T) {
 	_, err := svc.selectAccountForModelWithPlatform(ctx, ptr(int64(14)), "", "glm-5.3", nil, PlatformAnthropic)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrNoAvailableAccounts, "错误必须保持 503 分类")
+	require.Equal(t, 1, repo.groupQueryCount, "失败诊断不得再次查询分组候选")
 	require.Contains(t, err.Error(), `group platform "anthropic"`, "错误文案需含分组平台: %v", err)
 	require.Contains(t, err.Error(), `has no adapter for account platform "opencode_go"`, "错误文案需含账号平台: %v", err)
 	require.Contains(t, err.Error(), "glm-5.3", "错误文案需含模型: %v", err)
@@ -214,7 +216,7 @@ func TestListSchedulableAccounts_UngroupedPathKeepsPlatformFilter(t *testing.T) 
 		{ID: 2, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 2, Status: StatusActive, Schedulable: true},
 	})
 
-	accounts, useMixed, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformAnthropic, false)
+	accounts, useMixed, _, err := svc.listSchedulableAccounts(context.Background(), nil, PlatformAnthropic, false)
 	require.NoError(t, err)
 	require.True(t, useMixed)
 	require.Len(t, accounts, 1)
@@ -249,6 +251,14 @@ func TestSchedulerSnapshotLoadAccountsFromDB_BindingDimension(t *testing.T) {
 		gotIDs = append(gotIDs, acc.ID)
 	}
 	require.Equal(t, []int64{1, 3}, gotIDs, "只保留能力矩阵允许的同平台与 antigravity mixed 账号")
+
+	_, rawCandidates, err := svc.loadAccountsFromDBWithDiagnostics(context.Background(), SchedulerBucket{
+		GroupID:  7,
+		Platform: PlatformAnthropic,
+		Mode:     SchedulerModeMixed,
+	}, false)
+	require.NoError(t, err)
+	require.Len(t, rawCandidates, 3, "快照构建诊断必须保留原始绑定候选")
 }
 
 // TestBindingUnsupportedSelectionError_SkippedPlatformsSorted 多个无适配器平台时，
@@ -275,11 +285,44 @@ func TestBindingUnsupportedSelectionError_SkippedPlatformsSorted(t *testing.T) {
 func TestBindingUnsupportedSelectionError_NoGroupKeepsLegacyError(t *testing.T) {
 	svc, _ := newBindingSchedulingTestService(nil)
 
-	err := svc.bindingUnsupportedSelectionError(context.Background(), nil, PlatformAnthropic, "glm-5.3")
+	err := svc.bindingUnsupportedSelectionError(context.Background(), nil, PlatformAnthropic, "glm-5.3", nil)
 	require.NoError(t, err, "无分组时不应产生绑定能力错误")
 
-	err = svc.bindingUnsupportedSelectionError(context.Background(), ptr(int64(31)), PlatformOpenAI, "glm-5.3")
+	err = svc.bindingUnsupportedSelectionError(context.Background(), ptr(int64(31)), PlatformOpenAI, "glm-5.3", nil)
 	require.NoError(t, err, "无候选账号时不应产生绑定能力错误")
+}
+
+// TestBindingUnsupportedSelectionError_LogsInboundProtocol 验证诊断日志使用客户端入站协议，
+// 不使用账号凭证中的 api_protocol 冒充入站协议。
+func TestBindingUnsupportedSelectionError_LogsInboundProtocol(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+	}{
+		{name: "chat", protocol: "openai_chat_completions"},
+		{name: "responses", protocol: "openai_responses"},
+		{name: "messages", protocol: "anthropic_messages"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureServiceLogs(t)
+			svc, repo := newBindingSchedulingTestService([]Account{
+				{ID: 51, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Priority: 1, Status: StatusActive, Schedulable: true,
+					Credentials:   map[string]any{"api_key": "sk-protocol-secret", "api_protocol": APIProtocolResponses},
+					AccountGroups: []AccountGroup{{GroupID: 51}}},
+			})
+			ctx := bindingGroupContext(svc, 51, PlatformAnthropic)
+			ctx = context.WithValue(ctx, ctxkey.InboundProtocol, tt.protocol)
+
+			_, err := svc.selectAccountForModelWithPlatform(ctx, ptr(int64(51)), "", "glm-5.3", nil, PlatformAnthropic)
+			require.ErrorIs(t, err, ErrNoAvailableAccounts)
+			require.Equal(t, 1, repo.groupQueryCount)
+			require.Contains(t, logs.String(), "inbound_protocol="+tt.protocol)
+			require.NotContains(t, logs.String(), "sk-protocol-secret")
+			require.NotContains(t, logs.String(), "api_protocol="+APIProtocolResponses)
+		})
+	}
 }
 
 // TestListSchedulableByGroupID_UnboundAndOtherGroupAccountsNotVisible 绑定维度查询负例：

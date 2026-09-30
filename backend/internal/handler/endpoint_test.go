@@ -5,12 +5,36 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
+
+// TestInboundEndpointMiddlewareSetsInboundProtocol 验证三个网关入口写入真实客户端协议。
+func TestInboundEndpointMiddlewareSetsInboundProtocol(t *testing.T) {
+	tests := []struct {
+		path     string
+		protocol string
+	}{
+		{path: EndpointChatCompletions, protocol: service.ContentModerationProtocolOpenAIChat},
+		{path: EndpointResponses, protocol: service.ContentModerationProtocolOpenAIResponses},
+		{path: EndpointMessages, protocol: service.ContentModerationProtocolAnthropicMessages},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, nil)
+
+			InboundEndpointMiddleware()(c)
+
+			require.Equal(t, tt.protocol, c.Request.Context().Value(ctxkey.InboundProtocol))
+		})
+	}
+}
 
 // ──────────────────────────────────────────────────────────
 // NormalizeInboundEndpoint

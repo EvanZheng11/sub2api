@@ -208,28 +208,35 @@ func (s *SchedulerSnapshotService) Stop() {
 }
 
 func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	accounts, useMixed, _, err := s.ListSchedulableAccountsWithDiagnostics(ctx, groupID, platform, hasForcePlatform)
+	return accounts, useMixed, err
+}
+
+// ListSchedulableAccountsWithDiagnostics 返回快照候选以及构建候选时取得的原始绑定候选。
+// 快照命中时原始候选不在快照中，因此不为诊断再次查询数据库。
+func (s *SchedulerSnapshotService) ListSchedulableAccountsWithDiagnostics(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, []Account, error) {
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 	var writeToken SchedulerBucketWriteToken
 	canPublish := false
 	if err := ctx.Err(); err != nil {
-		return nil, useMixed, err
+		return nil, useMixed, nil, err
 	}
 
 	if s.cache != nil {
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, useMixed, ctxErr
+			return nil, useMixed, nil, ctxErr
 		}
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return derefAccounts(cached), useMixed, nil
+			return derefAccounts(cached), useMixed, nil, nil
 		}
 		token, err := s.cache.CaptureBucketWriteToken(ctx, bucket)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, useMixed, ctxErr
+			return nil, useMixed, nil, ctxErr
 		}
 		if err != nil {
 			if errors.Is(err, ErrSchedulerBucketRetired) || errors.Is(err, ErrSchedulerBucketWriteFenced) {
@@ -244,18 +251,18 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	}
 
 	if err := s.guardFallback(ctx); err != nil {
-		return nil, useMixed, err
+		return nil, useMixed, nil, err
 	}
 
 	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
 	defer cancel()
 
-	accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
+	accounts, bindingCandidates, err := s.loadAccountsFromDBWithDiagnostics(fallbackCtx, bucket, useMixed)
 	if err != nil {
-		return nil, useMixed, err
+		return nil, useMixed, nil, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, useMixed, ctxErr
+		return nil, useMixed, nil, ctxErr
 	}
 
 	if s.cache != nil && canPublish {
@@ -268,7 +275,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		}
 	}
 
-	return accounts, useMixed, nil
+	return accounts, useMixed, bindingCandidates, nil
 }
 
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -1467,8 +1474,13 @@ func (s *SchedulerSnapshotService) shouldLogOutboxLagWarning(active bool) bool {
 }
 
 func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucket SchedulerBucket, useMixed bool) ([]Account, error) {
+	accounts, _, err := s.loadAccountsFromDBWithDiagnostics(ctx, bucket, useMixed)
+	return accounts, err
+}
+
+func (s *SchedulerSnapshotService) loadAccountsFromDBWithDiagnostics(ctx context.Context, bucket SchedulerBucket, useMixed bool) ([]Account, []Account, error) {
 	if s.accountRepo == nil {
-		return nil, ErrSchedulerCacheNotReady
+		return nil, nil, ErrSchedulerCacheNotReady
 	}
 	groupID := bucket.GroupID
 	if s.isRunModeSimple() {
@@ -1479,11 +1491,13 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		platforms := []string{bucket.Platform, PlatformAntigravity}
 		var accounts []Account
 		var err error
+		var bindingCandidates []Account
 		if groupID > 0 {
 			// 绑定维度查询（设计 §3.3）：与 listSchedulableAccounts 直查路径一致，
 			// 分组候选集由 account_groups 绑定关系决定，平台能力改由内存能力矩阵判定。
 			accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, groupID)
 			if err == nil {
+				bindingCandidates = accounts
 				accounts = filterAccountsByBindingCapability(accounts, bucket.Platform)
 			}
 		} else if s.isRunModeSimple() {
@@ -1492,10 +1506,10 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 			accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, platforms)
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if groupID > 0 {
-			return accounts, nil
+			return accounts, bindingCandidates, nil
 		}
 		// 无分组快照没有绑定关系，保持既有平台过滤语义。
 		filtered := make([]Account, 0, len(accounts))
@@ -1505,7 +1519,7 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 			}
 			filtered = append(filtered, acc)
 		}
-		return filtered, nil
+		return filtered, nil, nil
 	}
 
 	if groupID > 0 {
@@ -1513,14 +1527,16 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		// 桶键（GroupID×Platform×Mode）不变，桶内候选改由能力矩阵在内存过滤。
 		accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, groupID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return filterAccountsByBindingCapability(accounts, bucket.Platform), nil
+		return filterAccountsByBindingCapability(accounts, bucket.Platform), accounts, nil
 	}
 	if s.isRunModeSimple() {
-		return s.accountRepo.ListSchedulableByPlatform(ctx, bucket.Platform)
+		accounts, err := s.accountRepo.ListSchedulableByPlatform(ctx, bucket.Platform)
+		return accounts, nil, err
 	}
-	return s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, bucket.Platform)
+	accounts, err := s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, bucket.Platform)
+	return accounts, nil, err
 }
 
 func (s *SchedulerSnapshotService) loadAccountsForRebuild(
