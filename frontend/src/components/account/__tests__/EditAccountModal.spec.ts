@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, showWarningMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
+  showWarningMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
 
@@ -12,7 +13,8 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError: vi.fn(),
     showSuccess: vi.fn(),
-    showInfo: vi.fn()
+    showInfo: vi.fn(),
+    showWarning: showWarningMock
   })
 }))
 
@@ -1669,6 +1671,23 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
       'antigravity_project_id'
     )
+  })
+
+  it('检测到混合渠道风险时只提示并继续更新账号', async () => {
+    const account = buildAntigravityAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({
+      has_risk: true,
+      message: '检测到混合渠道风险'
+    })
+    showWarningMock.mockReset()
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="set-shadow-group"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(checkMixedChannelRiskMock).toHaveBeenCalled()
+    expect(showWarningMock).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -3088,17 +3088,6 @@
     </template>
   </BaseDialog>
 
-  <!-- Mixed Channel Warning Dialog -->
-  <ConfirmDialog
-    :show="showMixedChannelWarning"
-    :title="t('admin.accounts.mixedChannelWarningTitle')"
-    :message="mixedChannelWarningMessageText"
-    :confirm-text="t('common.confirm')"
-    :cancel-text="t('common.cancel')"
-    :danger="true"
-    @confirm="handleMixedChannelConfirm"
-    @cancel="handleMixedChannelCancel"
-  />
 </template>
 
 <script setup lang="ts">
@@ -3113,7 +3102,6 @@ import type {
   Proxy,
   AdminGroup,
   Group,
-  CheckMixedChannelResponse,
   OpenAICompactMode,
   OpenAIResponsesMode,
   OpenAIEndpointCapability,
@@ -3124,7 +3112,6 @@ import type {
   OpenCodeGoUsageWindow
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
@@ -3644,13 +3631,7 @@ const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMappi
 const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-antigravity-model-mapping')
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('edit-temp-unsched-rule')
 
-const showMixedChannelWarning = ref(false)
-const mixedChannelWarningDetails = ref<{ groupName: string; currentPlatform: string; otherPlatform: string } | null>(
-  null
-)
-const mixedChannelWarningRawMessage = ref('')
-const mixedChannelWarningAction = ref<(() => Promise<void>) | null>(null)
-const antigravityMixedChannelConfirmed = ref(false)
+const mixedChannelRiskChecked = ref(false)
 
 // Quota control state (Anthropic OAuth/SetupToken only)
 const windowCostEnabled = ref(false)
@@ -4002,13 +3983,6 @@ const defaultBaseUrl = computed(() => {
   return 'https://api.anthropic.com'
 })
 
-const mixedChannelWarningMessageText = computed(() => {
-  if (mixedChannelWarningDetails.value) {
-    return t('admin.accounts.mixedChannelWarning', mixedChannelWarningDetails.value)
-  }
-  return mixedChannelWarningRawMessage.value
-})
-
 const form = reactive({
   name: '',
   notes: '',
@@ -4113,11 +4087,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   void nextTick(() => {
     syncingForm.value = false
   })
-  antigravityMixedChannelConfirmed.value = false
-  showMixedChannelWarning.value = false
-  mixedChannelWarningDetails.value = null
-  mixedChannelWarningRawMessage.value = ''
-  mixedChannelWarningAction.value = null
+  mixedChannelRiskChecked.value = false
   form.name = newAccount.name
   form.notes = newAccount.notes || ''
   form.proxy_id = newAccount.proxy_id
@@ -4973,54 +4943,11 @@ function toPositiveNumber(value: unknown) {
 
 const needsMixedChannelCheck = () => props.account?.platform === 'antigravity' || props.account?.platform === 'anthropic'
 
-const buildMixedChannelDetails = (resp?: CheckMixedChannelResponse) => {
-  const details = resp?.details
-  if (!details) {
-    return null
-  }
-  return {
-    groupName: details.group_name || 'Unknown',
-    currentPlatform: details.current_platform || 'Unknown',
-    otherPlatform: details.other_platform || 'Unknown'
-  }
-}
-
-const clearMixedChannelDialog = () => {
-  showMixedChannelWarning.value = false
-  mixedChannelWarningDetails.value = null
-  mixedChannelWarningRawMessage.value = ''
-  mixedChannelWarningAction.value = null
-}
-
-const openMixedChannelDialog = (opts: {
-  response?: CheckMixedChannelResponse
-  message?: string
-  onConfirm: () => Promise<void>
-}) => {
-  mixedChannelWarningDetails.value = buildMixedChannelDetails(opts.response)
-  mixedChannelWarningRawMessage.value =
-    opts.message || opts.response?.message || t('admin.accounts.failedToUpdate')
-  mixedChannelWarningAction.value = opts.onConfirm
-  showMixedChannelWarning.value = true
-}
-
-const withAntigravityConfirmFlag = (payload: Record<string, unknown>) => {
-  if (needsMixedChannelCheck() && antigravityMixedChannelConfirmed.value) {
-    return {
-      ...payload,
-      confirm_mixed_channel_risk: true
-    }
-  }
-  const cloned = { ...payload }
-  delete cloned.confirm_mixed_channel_risk
-  return cloned
-}
-
-const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<void>): Promise<boolean> => {
+const ensureMixedChannelRiskChecked = async (): Promise<boolean> => {
   if (!needsMixedChannelCheck()) {
     return true
   }
-  if (antigravityMixedChannelConfirmed.value) {
+  if (mixedChannelRiskChecked.value) {
     return true
   }
   if (!props.account) {
@@ -5033,17 +4960,12 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
       group_ids: form.group_ids,
       account_id: props.account.id
     })
+    mixedChannelRiskChecked.value = true
     if (!result.has_risk) {
       return true
     }
-    openMixedChannelDialog({
-      response: result,
-      onConfirm: async () => {
-        antigravityMixedChannelConfirmed.value = true
-        await onConfirm()
-      }
-    })
-    return false
+    appStore.showWarning('检测到混合渠道风险，仍将继续保存。')
+    return true
   } catch (error: any) {
     appStore.showError(error.message || t('admin.accounts.failedToUpdate'))
     return false
@@ -5055,8 +4977,7 @@ const parseDateTimeLocal = parseDateTimeLocalInput
 
 // Methods
 const handleClose = () => {
-  antigravityMixedChannelConfirmed.value = false
-  clearMixedChannelDialog()
+  mixedChannelRiskChecked.value = false
   emit('close')
 }
 
@@ -5100,22 +5021,12 @@ const persistGrokMediaEligibility = async (accountID: number, updatedAccount: Ac
 const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {
   submitting.value = true
   try {
-    let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
+    let updatedAccount = await adminAPI.accounts.update(accountID, updatePayload)
     updatedAccount = await persistGrokMediaEligibility(accountID, updatedAccount)
     appStore.showSuccess(t('admin.accounts.accountUpdated'))
     emit('updated', updatedAccount)
     handleClose()
   } catch (error: any) {
-    if (error.status === 409 && error.error === 'mixed_channel_warning' && needsMixedChannelCheck()) {
-      openMixedChannelDialog({
-        message: error.message,
-        onConfirm: async () => {
-          antigravityMixedChannelConfirmed.value = true
-          await submitUpdateAccount(accountID, updatePayload)
-        }
-      })
-      return
-    }
     appStore.showError(error.message || t('admin.accounts.failedToUpdate'))
   } finally {
     submitting.value = false
@@ -5851,9 +5762,7 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
-      await submitUpdateAccount(accountID, updatePayload)
-    })
+    const canContinue = await ensureMixedChannelRiskChecked()
     if (!canContinue) {
       return
     }
@@ -5864,23 +5773,4 @@ const handleSubmit = async () => {
   }
 }
 
-// Handle mixed channel warning confirmation
-const handleMixedChannelConfirm = async () => {
-  const action = mixedChannelWarningAction.value
-  if (!action) {
-    clearMixedChannelDialog()
-    return
-  }
-  clearMixedChannelDialog()
-  submitting.value = true
-  try {
-    await action()
-  } finally {
-    submitting.value = false
-  }
-}
-
-const handleMixedChannelCancel = () => {
-  clearMixedChannelDialog()
-}
 </script>

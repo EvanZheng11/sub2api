@@ -6,6 +6,7 @@ const {
   createAccountMock,
   probeUpstreamBillingMock,
   syncUpstreamModelsMock,
+  checkMixedChannelRiskMock,
   showWarningMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
@@ -14,6 +15,7 @@ const {
   createAccountMock: vi.fn(),
   probeUpstreamBillingMock: vi.fn(),
   syncUpstreamModelsMock: vi.fn(),
+  checkMixedChannelRiskMock: vi.fn(),
   showWarningMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
@@ -42,7 +44,7 @@ vi.mock('@/api/admin', () => ({
       create: createAccountMock,
       probeUpstreamBilling: probeUpstreamBillingMock,
       syncUpstreamModels: syncUpstreamModelsMock,
-      checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
       importCodexSession: importCodexSessionMock,
       createOpenAICodexPAT: createOpenAICodexPATMock,
     },
@@ -200,6 +202,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
     showWarningMock.mockReset()
     importCodexSessionMock.mockReset().mockResolvedValue({
       created: 1,
@@ -443,6 +446,24 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(false)
     expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+  })
+
+  it('检测到混合渠道风险时只提示并继续创建账号', async () => {
+    checkMixedChannelRiskMock.mockResolvedValueOnce({
+      has_risk: true,
+      message: '检测到混合渠道风险'
+    })
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.claudeConsole')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('风险账号')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(checkMixedChannelRiskMock).toHaveBeenCalled()
+    expect(showWarningMock).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
   })
 
   it('submits OpenCode Zen default protocol rules with adaptive endpoints', async () => {
