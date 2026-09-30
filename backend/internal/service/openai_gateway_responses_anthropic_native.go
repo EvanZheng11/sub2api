@@ -437,13 +437,18 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			return
 		}
 		if !semanticOutputStarted {
-			pendingEvents = append(pendingEvents, events...)
-			if !anthropicEventHasSemanticOutput(event) && event.Type != "message_stop" {
+			hasSemanticOutput := anthropicEventHasSemanticOutput(event)
+			isTerminalMessageDelta := event.Type == "message_delta" &&
+				event.Delta != nil && event.Delta.StopReason != ""
+			if !hasSemanticOutput && event.Type != "message_stop" && !isTerminalMessageDelta {
+				pendingEvents = append(pendingEvents, events...)
 				return
 			}
-			if anthropicEventHasSemanticOutput(event) {
-				semanticOutputStarted = true
+			if !hasSemanticOutput {
+				return
 			}
+			semanticOutputStarted = true
+			pendingEvents = append(pendingEvents, events...)
 			if semanticOutputStarted && firstChunk {
 				firstChunk = false
 				ms := int(time.Since(startTime).Milliseconds())
@@ -511,16 +516,15 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		processAnthropicEvent(&event)
 	}
 
-	if !sawMessageStop && !sawTerminalMessageDelta {
-		if !semanticOutputStarted {
-			logger.L().Warn("openai responses via native anthropic stream: stream ended before semantic output",
-				zap.String("request_id", requestID),
-			)
-			return resultWithUsage(), newOpenAIStreamFailoverError(resp, "stream ended before message_stop")
-		}
-		return resultWithUsage(), fmt.Errorf("stream ended after semantic output before message_stop")
+	if !semanticOutputStarted {
+		logger.L().Warn("openai responses via native anthropic stream: stream ended without semantic output",
+			zap.String("request_id", requestID),
+			zap.Bool("saw_message_stop", sawMessageStop),
+			zap.Bool("saw_terminal_message_delta", sawTerminalMessageDelta),
+		)
+		return resultWithUsage(), newOpenAIStreamFailoverError(resp, "stream ended without semantic output")
 	}
-	if !sawMessageStop && semanticOutputStarted {
+	if !sawMessageStop && !sawTerminalMessageDelta {
 		return resultWithUsage(), fmt.Errorf("stream ended after semantic output before message_stop")
 	}
 
