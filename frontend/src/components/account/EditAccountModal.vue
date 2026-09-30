@@ -3632,6 +3632,7 @@ const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('edit-temp-unsched-rule')
 
 const mixedChannelRiskChecked = ref(false)
+const mixedChannelRiskCheckedKey = ref('')
 
 // Quota control state (Anthropic OAuth/SetupToken only)
 const windowCostEnabled = ref(false)
@@ -4088,6 +4089,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     syncingForm.value = false
   })
   mixedChannelRiskChecked.value = false
+  mixedChannelRiskCheckedKey.value = ''
   form.name = newAccount.name
   form.notes = newAccount.notes || ''
   form.proxy_id = newAccount.proxy_id
@@ -4943,11 +4945,15 @@ function toPositiveNumber(value: unknown) {
 
 const needsMixedChannelCheck = () => props.account?.platform === 'antigravity' || props.account?.platform === 'anthropic'
 
+const getMixedChannelRiskKey = () =>
+  `${props.account?.platform ?? ''}:${[...form.group_ids].sort((a, b) => a - b).join(',')}`
+
 const ensureMixedChannelRiskChecked = async (): Promise<boolean> => {
   if (!needsMixedChannelCheck()) {
     return true
   }
-  if (mixedChannelRiskChecked.value) {
+  const riskKey = getMixedChannelRiskKey()
+  if (mixedChannelRiskChecked.value && mixedChannelRiskCheckedKey.value === riskKey) {
     return true
   }
   if (!props.account) {
@@ -4961,6 +4967,7 @@ const ensureMixedChannelRiskChecked = async (): Promise<boolean> => {
       account_id: props.account.id
     })
     mixedChannelRiskChecked.value = true
+    mixedChannelRiskCheckedKey.value = riskKey
     if (!result.has_risk) {
       return true
     }
@@ -4978,6 +4985,7 @@ const parseDateTimeLocal = parseDateTimeLocalInput
 // Methods
 const handleClose = () => {
   mixedChannelRiskChecked.value = false
+  mixedChannelRiskCheckedKey.value = ''
   emit('close')
 }
 

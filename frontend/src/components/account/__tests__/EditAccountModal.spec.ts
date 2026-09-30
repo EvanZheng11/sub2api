@@ -148,6 +148,13 @@ const GroupSelectorStub = defineComponent({
       >
         group
       </button>
+      <button
+        type="button"
+        data-testid="set-reordered-groups"
+        @click="$emit('update:modelValue', [2, 1])"
+      >
+        reorder
+      </button>
     </div>
   `
 })
@@ -1697,6 +1704,26 @@ describe('EditAccountModal', () => {
     expect(checkMixedChannelRiskMock).toHaveBeenCalled()
     expect(showWarningMock).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('按平台和规范化后的组集合缓存风险检查，组变更后重新检查', async () => {
+    const account = buildAntigravityAccount()
+    account.group_ids = [1, 2]
+    updateAccountMock.mockReset().mockRejectedValue({ message: '保存失败' })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="set-reordered-groups"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="set-shadow-group"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(checkMixedChannelRiskMock).toHaveBeenCalledTimes(2)
+    expect(checkMixedChannelRiskMock.mock.calls[1]?.[0]?.group_ids).toEqual([7])
   })
 
   it('更新接口拒绝 mixed_channel_warning 时只展示错误并保持弹窗打开', async () => {
