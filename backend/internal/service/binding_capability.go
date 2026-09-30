@@ -45,15 +45,24 @@ func SupportsBinding(inboundPlatform, accountPlatform, apiProtocol string) bool 
 
 // bindingCapabilityAllows 在 SupportsBinding 之上叠加账号级资格：
 // antigravity 账号承接 anthropic/gemini 分组时必须启用 mixed_scheduling。
+// 判定统一使用规范化后的平台值，避免大小写/首尾空白绕过 mixed_scheduling 检查。
 func bindingCapabilityAllows(platform string, acc *Account) bool {
 	if acc == nil {
 		return false
 	}
-	if !SupportsBinding(platform, acc.Platform, acc.GetAPIProtocol()) {
+	groupPlatform := normalizePlatformToken(platform)
+	accountPlatform := normalizePlatformToken(acc.Platform)
+	if !SupportsBinding(groupPlatform, accountPlatform, acc.GetAPIProtocol()) {
 		return false
 	}
-	if acc.Platform == PlatformAntigravity && acc.Platform != platform && !acc.IsMixedSchedulingEnabled() {
-		return false
+	if accountPlatform == PlatformAntigravity && accountPlatform != groupPlatform {
+		// IsMixedSchedulingEnabled 内部用原始 Platform 做前置判断，
+		// 这里传入规范化后的副本，避免大小写/首尾空白绕过 mixed_scheduling 开关。
+		normalizedAcc := *acc
+		normalizedAcc.Platform = accountPlatform
+		if !normalizedAcc.IsMixedSchedulingEnabled() {
+			return false
+		}
 	}
 	return true
 }

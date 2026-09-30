@@ -102,6 +102,43 @@ func TestBindingCapabilityAllowsAntigravitySwitch(t *testing.T) {
 	}
 }
 
+// TestBindingCapabilityAllowsAntigravityNormalization antigravity 账号平台
+// 及分组平台带大小写/首尾空白时，mixed_scheduling 开关判定必须基于规范化后的
+// 值执行，防止原始值绕过 IsMixedSchedulingEnabled 检查（Task 2 审查修复）。
+func TestBindingCapabilityAllowsAntigravityNormalization(t *testing.T) {
+	mixedOn := func(platform string) *Account {
+		return &Account{Platform: platform, Extra: map[string]any{"mixed_scheduling": true}}
+	}
+	mixedOff := func(platform string) *Account {
+		return &Account{Platform: platform, Extra: map[string]any{"mixed_scheduling": false}}
+	}
+
+	cases := []struct {
+		name          string
+		groupPlatform string
+		account       *Account
+		want          bool
+	}{
+		{"antigravity×anthropic 大小写 mixed 关闭应拒绝", "ANTHROPIC", mixedOff("ANTIGRAVITY"), false},
+		{"antigravity×anthropic 空白 mixed 关闭应拒绝", " anthropic ", mixedOff(" antigravity "), false},
+		{"antigravity×gemini 大小写 mixed 关闭应拒绝", "GEMINI", mixedOff("AntiGravity"), false},
+		{"antigravity×gemini 空白 mixed 关闭应拒绝", " gemini ", mixedOff("\t antigravity\n"), false},
+		{"antigravity×anthropic 大小写 mixed 开启应通过", "ANTHROPIC", mixedOn("ANTIGRAVITY"), true},
+		{"antigravity×anthropic 空白 mixed 开启应通过", " anthropic ", mixedOn(" antigravity "), true},
+		{"antigravity×gemini 大小写 mixed 开启应通过", "GEMINI", mixedOn("AntiGravity"), true},
+		{"antigravity×gemini 空白 mixed 开启应通过", " gemini ", mixedOn("\t antigravity\n"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bindingCapabilityAllows(tc.groupPlatform, tc.account)
+			if got != tc.want {
+				t.Fatalf("bindingCapabilityAllows(%q, {Platform:%q, mixed:%v}) = %v, want %v",
+					tc.groupPlatform, tc.account.Platform, tc.account.Extra["mixed_scheduling"], got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFilterAccountsByBindingCapability 候选账号按能力矩阵内存过滤，
 // 未通过能力的账号被跳过，通过账号保持原有顺序。
 func TestFilterAccountsByBindingCapability(t *testing.T) {
