@@ -4566,6 +4566,7 @@ const buildOpenAICompactModelMapping = () =>
   buildModelMappingObject('mapping', [], openAICompactModelMappings.value)
 
 const mixedChannelRiskChecked = ref(false)
+const mixedChannelRiskCheckedKey = ref('')
 const showAdvancedOAuth = ref(false)
 const showGeminiHelpDialog = ref(false)
 
@@ -5139,11 +5140,15 @@ const splitTempUnschedKeywords = (value: string) => {
 
 const needsMixedChannelCheck = (platform: AccountPlatform) => platform === 'antigravity' || platform === 'anthropic'
 
+const getMixedChannelRiskKey = () =>
+  `${form.platform}:${[...form.group_ids].sort((a, b) => a - b).join(',')}`
+
 const ensureMixedChannelRiskChecked = async (): Promise<boolean> => {
   if (!needsMixedChannelCheck(form.platform)) {
     return true
   }
-  if (mixedChannelRiskChecked.value) {
+  const riskKey = getMixedChannelRiskKey()
+  if (mixedChannelRiskChecked.value && mixedChannelRiskCheckedKey.value === riskKey) {
     return true
   }
 
@@ -5153,6 +5158,7 @@ const ensureMixedChannelRiskChecked = async (): Promise<boolean> => {
       group_ids: form.group_ids
     })
     mixedChannelRiskChecked.value = true
+    mixedChannelRiskCheckedKey.value = riskKey
     if (!result.has_risk) {
       return true
     }
@@ -5322,11 +5328,13 @@ const resetForm = () => {
   grokOAuth.resetState()
   oauthFlowRef.value?.reset()
   mixedChannelRiskChecked.value = false
+  mixedChannelRiskCheckedKey.value = ''
   upstreamModelsPreviewed.value = false
 }
 
 const handleClose = () => {
   mixedChannelRiskChecked.value = false
+  mixedChannelRiskCheckedKey.value = ''
   emit('close')
 }
 
@@ -5769,6 +5777,8 @@ const handleSubmit = async () => {
 
 const goBackToBasicInfo = () => {
   step.value = 1
+  mixedChannelRiskChecked.value = false
+  mixedChannelRiskCheckedKey.value = ''
   oauth.resetState()
   openaiOAuth.resetState()
   geminiOAuth.resetState()

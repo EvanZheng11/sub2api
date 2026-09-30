@@ -131,6 +131,24 @@ describe('BulkEditAccountModal', () => {
     expect(showError).toHaveBeenCalledWith('admin.accounts.bulkEdit.rateSyncConflict')
   })
 
+  it('批量更新接口拒绝 mixed_channel_warning 时只展示错误并保持弹窗打开', async () => {
+    vi.mocked(adminAPI.accounts.bulkUpdate).mockRejectedValueOnce({
+      status: 409,
+      error: 'mixed_channel_warning',
+      message: 'mixed_channel_warning: Group conflict'
+    })
+    const wrapper = mountModal()
+
+    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('mixed_channel_warning: Group conflict')
+    expect(wrapper.emitted('close')).toBeUndefined()
+  })
+
   it('检测到混合渠道风险时只提示并继续批量更新', async () => {
     vi.mocked(adminAPI.accounts.checkMixedChannelRisk).mockResolvedValueOnce({
       has_risk: true,

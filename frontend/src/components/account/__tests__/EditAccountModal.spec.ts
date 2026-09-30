@@ -2,17 +2,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, showWarningMock, authIsSimpleMode } = vi.hoisted(() => ({
+const {
+  updateAccountMock,
+  checkMixedChannelRiskMock,
+  showErrorMock,
+  showSuccessMock,
+  showWarningMock,
+  authIsSimpleMode
+} = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
+  showErrorMock: vi.fn(),
+  showSuccessMock: vi.fn(),
   showWarningMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
-    showSuccess: vi.fn(),
+    showError: showErrorMock,
+    showSuccess: showSuccessMock,
     showInfo: vi.fn(),
     showWarning: showWarningMock
   })
@@ -1688,6 +1697,26 @@ describe('EditAccountModal', () => {
     expect(checkMixedChannelRiskMock).toHaveBeenCalled()
     expect(showWarningMock).toHaveBeenCalledWith('检测到混合渠道风险，仍将继续保存。')
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('更新接口拒绝 mixed_channel_warning 时只展示错误并保持弹窗打开', async () => {
+    const account = buildAntigravityAccount()
+    showErrorMock.mockReset()
+    showSuccessMock.mockReset()
+    updateAccountMock.mockReset().mockRejectedValueOnce({
+      status: 409,
+      error: 'mixed_channel_warning',
+      message: 'mixed_channel_warning: Group conflict'
+    })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(showSuccessMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith('mixed_channel_warning: Group conflict')
+    expect(wrapper.emitted('close')).toBeUndefined()
   })
 })
 
