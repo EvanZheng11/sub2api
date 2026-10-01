@@ -35,6 +35,10 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 	}
 
 	platform = NormalizeOpenAICompatiblePlatform(platform)
+	platforms := []string{platform}
+	if platform == PlatformOpenAI {
+		platforms = append(platforms, PlatformOpenCodeGo)
+	}
 	queryGroupID := groupID
 	includeGrouped := false
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -44,7 +48,7 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 	accounts, err := s.accountRepo.ListModelAvailabilityCandidates(
 		ctx,
 		queryGroupID,
-		[]string{platform},
+		platforms,
 		includeGrouped,
 	)
 	if err != nil {

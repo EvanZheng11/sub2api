@@ -402,7 +402,7 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "account_model_not_owned"
 		}
 	}
-	if account.Platform != platform || !account.IsOpenAICompatible() {
+	if !BindingCapabilityAllows(platform, account) || !account.IsOpenAICompatible() {
 		return "platform_mismatch"
 	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
