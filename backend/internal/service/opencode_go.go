@@ -39,6 +39,7 @@ func DefaultOpenCodeGoModelIDs() []string {
 		"kimi-k2.6",
 		"longcat-2.0",
 		"deepseek-v4-pro",
+		"deepseek-v4.1-flash",
 		"deepseek-v4-flash",
 		"deepseek-v4-flash-vision-exp",
 		"mimo-v2.5",
