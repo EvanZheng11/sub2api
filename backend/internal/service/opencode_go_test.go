@@ -232,6 +232,7 @@ func TestDefaultOpenCodeGoModelIDsCoverDocumentedCatalog(t *testing.T) {
 	ids := DefaultOpenCodeGoModelIDs()
 	require.Contains(t, ids, "grok-4.6")
 	require.Contains(t, ids, "minimax-m3")
+	require.Contains(t, ids, "deepseek-v4.1-flash")
 	require.Contains(t, ids, "glm-5.3")
 	require.NotEmpty(t, ids)
 }
