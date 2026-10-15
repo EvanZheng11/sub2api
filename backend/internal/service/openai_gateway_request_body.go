@@ -1602,7 +1602,7 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 		changed = true
 	}
 
-	for _, field := range openAIChatGPTInternalUnsupportedFields {
+	for _, field := range openAICodexOAuthUnsupportedFields {
 		if value := gjson.GetBytes(normalized, field); !value.Exists() {
 			continue
 		}
@@ -1707,6 +1707,27 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 
 func isOpenAICodexModel(model string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
+}
+
+// ensureOpenAIPassthroughInstructions 为透传 OAuth 请求补齐缺失的 instructions：
+// 缺失、空串或非字符串时注入默认 Codex 提示词，返回是否发生注入。
+// 本地 fork 定制（evan 2026-06-18 提交）；上游同名能力（dfdbc2770）只覆盖
+// codex 模型，这里保留 fork 的全模型覆盖，403 预检仍由调用方在注入前执行。
+func ensureOpenAIPassthroughInstructions(body []byte, reqModel string) ([]byte, bool, error) {
+	instructions := gjson.GetBytes(body, "instructions")
+	if instructions.Exists() && instructions.Type == gjson.String && strings.TrimSpace(instructions.String()) != "" {
+		return body, false, nil
+	}
+
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		model = strings.TrimSpace(reqModel)
+	}
+	next, err := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(model))
+	if err != nil {
+		return body, false, fmt.Errorf("normalize passthrough body instructions: %w", err)
+	}
+	return next, true, nil
 }
 
 // extractOpenAIReasoningEffortFromBody 按优先级传入模型候选（如 upstreamModel,

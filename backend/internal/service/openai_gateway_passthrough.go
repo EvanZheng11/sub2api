@@ -163,12 +163,15 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			})
 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
 		}
-		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
-			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
-			if setErr != nil {
-				return nil, fmt.Errorf("set passthrough codex instructions: %w", setErr)
-			}
-			body = nextBody
+		// 本地 fork 定制：instructions 缺失时注入默认 Codex 提示词。上游同名能力
+		// （dfdbc2770）只对 codex 模型注入、同样位于 403 预检之后；这里保留 fork 的
+		// 全模型覆盖，instructions 存在但为空/非字符串仍由上面的 403 预检拦截。
+		bodyWithInstructions, injected, err := ensureOpenAIPassthroughInstructions(body, reqModel)
+		if err != nil {
+			return nil, err
+		}
+		if injected {
+			body = bodyWithInstructions
 		}
 
 		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, isOpenAIResponsesCompactPath(c))
