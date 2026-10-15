@@ -38,6 +38,11 @@ func SupportsBinding(inboundPlatform, accountPlatform, apiProtocol string) bool 
 		// OpenAI Chat Completions / Responses 入站 × opencode_go 账号，
 		// 由 opencode_openai_adapter.go 承接（设计 §4）。
 		return true
+	case inbound == PlatformOpenAI && account == PlatformGrok:
+		// OpenAI Chat Completions / Responses 入站 × grok（supergrok）账号：
+		// 由 forwardGrokResponses / Chat Completions 转发链按账号平台分流，
+		// 账号通过 account_groups 绑定关系承接 openai 分组请求。
+		return true
 	default:
 		return false
 	}

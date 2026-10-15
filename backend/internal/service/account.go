@@ -1843,6 +1843,12 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		switch capability {
 		case OpenAIEndpointCapabilityChatCompletions:
 			return true
+		case OpenAIEndpointCapabilityResponses:
+			// Grok 原生提供 /v1/responses（forwardGrokResponses 直连 xAI），
+			// 不存在会在 forward 阶段降级为 Chat Completions 的上游，故无条件
+			// 声明；否则 openai 分组绑定的 grok 账号会在生图意图 / compact 的
+			// /v1/responses 调度中被 capability_mismatch 排除。
+			return true
 		case OpenAIEndpointCapabilityGrokMediaGeneration:
 			eligible, reason := a.GrokMediaGenerationEligibility()
 			// Unobserved OAuth accounts remain scheduler candidates only so the
