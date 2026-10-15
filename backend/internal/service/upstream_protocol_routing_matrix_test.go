@@ -30,6 +30,16 @@ import (
 const routingMatrixMainRevision = "5fc0e486c3f6a8a191b8bd140f39b60457f611cf"
 const routingMatrixGoldenPath = "testdata/upstream_protocol_routing_main_golden.json"
 
+// opencode_go 是本 fork 的本地定制平台：模型 ID 前缀归一（剥离 opencode/ 前缀）、
+// 上游 base URL 按凭据 api_base_urls[协议] → base_url → 预设域名解析、非 API Key
+// 账号返回本地化凭据错误文案（见 docs/superpowers/specs/
+// 2026-09-30-cross-platform-account-group-adapter-design.md §4.5/§4.6）。
+// 这些差异与上游 main 基线必然不一致，因此该平台切片单独录制为 fork 基准：
+// 只固定本分支已实现的适配行为，并继续对任何未预期的改动报警。
+// 生成/更新：python3 testdata/record_upstream_protocol_routing_main.py --opencode-go-fork
+const routingMatrixOpenCodeGoForkRevision = "c5b6c1566a202959b1a97fa83768bd16f9fd7060"
+const routingMatrixOpenCodeGoForkGoldenPath = "testdata/upstream_protocol_routing_opencode_go_fork_golden.json"
+
 type routingMatrixIngress struct {
 	name          string
 	path          string
@@ -270,9 +280,23 @@ func routingMatrixCaseDigest(cases []routingMatrixCase) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(keys.String())))
 }
 
+// routingMatrixCasesForPlatform 取出指定平台切片的用例，保持 routingMatrixCases 的相对顺序。
+func routingMatrixCasesForPlatform(platform string) []routingMatrixCase {
+	var filtered []routingMatrixCase
+	for _, tc := range routingMatrixCases() {
+		if tc.platform == platform {
+			filtered = append(filtered, tc)
+		}
+	}
+	return filtered
+}
+
 func captureRoutingMatrixGolden() routingMatrixGolden {
-	cases := routingMatrixCases()
-	golden := routingMatrixGolden{SourceRevision: routingMatrixMainRevision, CaseCount: len(cases), CaseKeysSHA256: routingMatrixCaseDigest(cases)}
+	return captureRoutingMatrixGoldenFor(routingMatrixCases(), routingMatrixMainRevision)
+}
+
+func captureRoutingMatrixGoldenFor(cases []routingMatrixCase, revision string) routingMatrixGolden {
+	golden := routingMatrixGolden{SourceRevision: revision, CaseCount: len(cases), CaseKeysSHA256: routingMatrixCaseDigest(cases)}
 	indexByObservation := make(map[string]int)
 	for _, tc := range cases {
 		obs := observeRouting(tc)
@@ -322,10 +346,25 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	require.Equal(t, routingMatrixCaseDigest(cases), golden.CaseKeysSHA256)
 	require.Len(t, golden.Results, len(cases))
 
+	// opencode_go 是本 fork 的本地适配平台，其期望观测单独录制在 fork 基准里，
+	// 不用上游 main 期望比对（见 routingMatrixOpenCodeGoForkRevision 注释）。
+	forkData, err := os.ReadFile(routingMatrixOpenCodeGoForkGoldenPath)
+	require.NoError(t, err)
+	var forkGolden routingMatrixGolden
+	require.NoError(t, json.Unmarshal(forkData, &forkGolden))
+	forkCases := routingMatrixCasesForPlatform(PlatformOpenCodeGo)
+	require.Equal(t, routingMatrixOpenCodeGoForkRevision, forkGolden.SourceRevision)
+	require.Equal(t, len(forkCases), forkGolden.CaseCount)
+	require.Equal(t, routingMatrixCaseDigest(forkCases), forkGolden.CaseKeysSHA256)
+	require.Len(t, forkGolden.Results, len(forkCases))
+
 	var differences []string
 	mismatched := 0
 	knownDifferences := 0
 	for i, tc := range cases {
+		if tc.platform == PlatformOpenCodeGo {
+			continue
+		}
 		index := golden.Results[i]
 		require.GreaterOrEqual(t, index, 0)
 		require.Less(t, index, len(golden.Observations))
@@ -347,4 +386,22 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	// 2 account types × 4 modes × 3 probe states × 4 address configurations ×
 	// 2 model spellings. A disappeared or expanded exception requires review.
 	require.Equal(t, 192, knownDifferences, "unexpected change to the declared Zhipu non-API-Key difference")
+
+	forkDifferences := []string{}
+	forkMismatched := 0
+	for i, tc := range forkCases {
+		index := forkGolden.Results[i]
+		require.GreaterOrEqual(t, index, 0)
+		require.Less(t, index, len(forkGolden.Observations))
+		want := forkGolden.Observations[index]
+		got := observeRouting(tc)
+		if reflect.DeepEqual(want, got) {
+			continue
+		}
+		forkMismatched++
+		if len(forkDifferences) < 12 {
+			forkDifferences = append(forkDifferences, fmt.Sprintf("%s\nfork: %s\ncurrent: %s", tc.key(), want, got))
+		}
+	}
+	require.Zero(t, forkMismatched, "opencode_go routing differs from the fork baseline %s in %d cases:\n%s", forkGolden.SourceRevision, forkMismatched, strings.Join(forkDifferences, "\n"))
 }
