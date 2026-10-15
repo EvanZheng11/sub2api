@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -108,7 +109,7 @@ func TestForwardOpenCodeGoFromResponsesDispatchesNativeEndpoints(t *testing.T) {
 			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 			c, _ := opencodeAdapterTestContext("/v1/responses", body)
 
-			result, err := svc.forwardOpenCodeGoFromResponses(context.Background(), c, account, body)
+			result, err := svc.forwardOpenCodeGoFromResponses(context.Background(), c, account, body, time.Now())
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Equal(t, tt.wantURL, upstream.lastReq.URL.String())
@@ -528,7 +529,7 @@ func TestForwardOpenCodeGoFromResponsesKeepsNativeResponsesOnCommonPath(t *testi
 	body := []byte(`{"model":"opencode/glm-5.3","stream":false,"input":"hi"}`)
 	c, _ := opencodeAdapterTestContext("/v1/responses", body)
 
-	result, err := (&OpenAIGatewayService{}).forwardOpenCodeGoFromResponses(context.Background(), c, account, body)
+	result, err := (&OpenAIGatewayService{}).forwardOpenCodeGoFromResponses(context.Background(), c, account, body, time.Now())
 	require.NoError(t, err)
 	require.Nil(t, result)
 }

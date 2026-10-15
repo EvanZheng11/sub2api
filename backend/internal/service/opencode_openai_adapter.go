@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
@@ -116,12 +117,18 @@ func (s *OpenAIGatewayService) forwardOpenCodeGoFromResponses(
 	c *gin.Context,
 	account *Account,
 	body []byte,
+	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	mapped := resolveMappedUpstreamModel(account, body, "")
+	// 与三个入站入口的守卫保持一致：上游目录不支持的模型（gemini / jev）在协议
+	// 分流前就拒绝，避免走通用转发链后变成上游 502。
+	if IsOpenCodeUnsupportedModel(mapped) {
+		return nil, writeOpenCodeUnsupportedModelError(c, false, mapped)
+	}
 	if err := ensureOpenCodeGoForwardCredentials(account); err != nil {
 		return nil, err
 	}
-	mapped := resolveOpenCodeGoMappedModel(account, body, "")
-	protocol := openCodeGoNativeProtocol(account, mapped)
+	protocol := account.resolveModelRoutedProtocol(mapped)
 	if _, err := s.openCodeGoForwardBaseURL(account, protocol); err != nil {
 		return nil, err
 	}
@@ -131,7 +138,7 @@ func (s *OpenAIGatewayService) forwardOpenCodeGoFromResponses(
 	case APIProtocolResponses:
 		return nil, nil
 	default:
-		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
+		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body, startTime)
 	}
 }
 
@@ -144,11 +151,16 @@ func (s *OpenAIGatewayService) forwardOpenCodeGoFromChatCompletions(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	mapped := resolveMappedUpstreamModel(account, body, defaultMappedModel)
+	// 与三个入站入口的守卫保持一致：上游目录不支持的模型（gemini / jev）在协议
+	// 分流前就拒绝，避免走通用转发链后变成上游 502。
+	if IsOpenCodeUnsupportedModel(mapped) {
+		return nil, writeOpenCodeUnsupportedModelError(c, false, mapped)
+	}
 	if err := ensureOpenCodeGoForwardCredentials(account); err != nil {
 		return nil, err
 	}
-	mapped := resolveOpenCodeGoMappedModel(account, body, defaultMappedModel)
-	protocol := openCodeGoNativeProtocol(account, mapped)
+	protocol := account.resolveModelRoutedProtocol(mapped)
 	if _, err := s.openCodeGoForwardBaseURL(account, protocol); err != nil {
 		return nil, err
 	}
