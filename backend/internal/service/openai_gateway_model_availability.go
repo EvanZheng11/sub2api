@@ -37,7 +37,10 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	platforms := []string{platform}
 	if platform == PlatformOpenAI {
-		platforms = append(platforms, PlatformOpenCodeGo)
+		// openai 分组可绑定 opencode_go（适配器）与 grok（supergrok）账号，
+		// 与 binding_capability.go 的 openai 入站白名单保持一致；诊断平台集合
+		// 漏掉可承接平台会把"有账号但诊断不到"误判为 404 model_not_found。
+		platforms = append(platforms, PlatformOpenCodeGo, PlatformGrok)
 	}
 	queryGroupID := groupID
 	includeGrouped := false

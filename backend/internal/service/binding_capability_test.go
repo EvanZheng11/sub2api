@@ -23,6 +23,9 @@ func TestSupportsBindingMatrix(t *testing.T) {
 		{"antigravity 到 anthropic（mixed scheduling）", PlatformAnthropic, PlatformAntigravity, "", true},
 		{"antigravity 到 gemini（mixed scheduling）", PlatformGemini, PlatformAntigravity, "", true},
 		{"openai 到 opencode（本设计新增适配器）", PlatformOpenAI, PlatformOpenCodeGo, APIProtocolAdaptive, true},
+		{"openai 到 grok（supergrok 账号绑定）", PlatformOpenAI, PlatformGrok, "", true},
+		{"grok 到 openai 不支持", PlatformGrok, PlatformOpenAI, "", false},
+		{"grok 到 opencode 不支持", PlatformGrok, PlatformOpenCodeGo, APIProtocolAdaptive, false},
 		{"anthropic 到 opencode 不支持", PlatformAnthropic, PlatformOpenCodeGo, APIProtocolAdaptive, false},
 		{"gemini 到 opencode 不支持", PlatformGemini, PlatformOpenCodeGo, APIProtocolAdaptive, false},
 		{"openai 到 anthropic 不支持", PlatformOpenAI, PlatformAnthropic, "", false},
@@ -60,6 +63,8 @@ func TestSupportsBindingPlatformNormalization(t *testing.T) {
 	}{
 		{"入站平台大写混排", "OpenAI", PlatformOpenCodeGo, APIProtocolAdaptive, true},
 		{"账号平台大写混排", PlatformOpenAI, "OpenCode_Go", APIProtocolAdaptive, true},
+		{"账号平台 grok 大小写混排", PlatformOpenAI, "GROK", "", true},
+		{"入站与账号平台带首尾空白（openai×grok）", " OpenAI ", " Grok ", "", true},
 		{"入站平台带首尾空白", " openai ", PlatformOpenCodeGo, APIProtocolAdaptive, true},
 		{"账号平台带首尾空白", PlatformAnthropic, " Anthropic ", "", true},
 		{"空白规整后为空不支持", " \t", PlatformOpenAI, "", false},

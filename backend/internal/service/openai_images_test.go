@@ -714,6 +714,31 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponses))
 	})
 
+	t.Run("responses 能力：Grok 原生支持 /v1/responses，无条件声明", func(t *testing.T) {
+		// grok-4.7 等文本模型的原生 /v1/responses 请求由 forwardGrokResponses
+		// 直连 xAI，不存在"被降级为 Chat Completions"的账号，因此 OAuth 与
+		// APIKey 都必须声明 Responses 能力；否则 openai 分组绑定的 grok 账号
+		// 会在生图意图 / compact 的 /v1/responses 调度中被 capability_mismatch 排除。
+		oauth := &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}
+		apiKey := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}
+
+		require.True(t, oauth.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponses))
+		require.True(t, apiKey.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponses))
+	})
+
+	t.Run("responses 能力：声明后不影响 Grok chat 与媒体能力语义", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformGrok,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{GrokMediaEligibleExtraKey: false},
+		}
+
+		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityChatCompletions))
+		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponses))
+		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityGrokMediaGeneration))
+		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
+	})
+
 	t.Run("responses 能力：仍需通过 chat_completions 配置集校验", func(t *testing.T) {
 		// 未探测（默认支持 responses），但显式能力集未声明 chat_completions。
 		account := &Account{
