@@ -1273,6 +1273,8 @@ type TestAccountRequest struct {
 	// ImageDataURL / AudioDataURL are data:<mime>;base64,... payloads.
 	ImageDataURL string `json:"image_data_url"`
 	AudioDataURL string `json:"audio_data_url"`
+	// TestQuestionID > 0 时本次测试会写入该题目的测试历史。
+	TestQuestionID int64 `json:"test_question_id"`
 }
 
 type SyncFromCRSRequest struct {
@@ -1306,17 +1308,28 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		ImageDataURL:    req.ImageDataURL,
 		AudioDataURL:    req.AudioDataURL,
 		ReasoningEffort: req.ReasoningEffort,
+		TestQuestionID:  req.TestQuestionID,
 	}
 
 	// Use AccountTestService to test the account with SSE streaming
 	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode, opts); err != nil {
-		// 参数错误（如未知 reasoning_effort）在写入 SSE 前返回，转成 400 给前端明确提示。
+		// SSE 已经开始写出：状态码和响应头已经随首个事件发给客户端，不能再写第二份响应体
+		// （改写状态码也无效，只会让前端收到错位的数据）。错误本身已由 service 记录日志，这里只记录后返回。
+		if c.Writer.Written() {
+			log.Printf("[account-test] 测试在 SSE 写出后失败 account=%d: %s", accountID, err.Error())
+			return
+		}
+		// 尚未写出任何 SSE 内容：返回标准错误响应。
+		// 参数错误（如未知 reasoning_effort）转成 400 给前端明确提示；
+		// 其余 infraerrors（如题目已被删除的 TEST_QUESTION_NOT_FOUND）由 ErrorFrom 映射成对应状态码。
 		var requestErr *service.AccountTestRequestError
 		if errors.As(err, &requestErr) {
 			log.Printf("[account-test] 拒绝测试请求 account=%d: %s", accountID, requestErr.Error())
 			response.BadRequest(c, requestErr.Error())
+			return
 		}
-		// 其他错误已经通过 SSE 发送并记录日志，这里只返回。
+		log.Printf("[account-test] 测试请求失败 account=%d: %s", accountID, err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 

@@ -44,6 +44,42 @@ export default {
       type: '类型',
       prompt: '提示词',
       promptPlaceholder: '填写发送给模型的完整提示词'
+    },
+    history: {
+      action: '测试历史',
+      title: '测试历史',
+      loadFailed: '加载测试历史失败',
+      detailFailed: '加载测试记录详情失败',
+      empty: '暂无测试记录',
+      emptyHint: '这道题目还没有执行过账号测试。',
+      columns: {
+        createdAt: '记录时间',
+        account: '账号',
+        model: '模型',
+        reasoningEffort: '思考强度',
+        latency: '测试时长',
+        status: '状态',
+        result: '结果'
+      },
+      status: {
+        success: '成功',
+        failed: '失败'
+      },
+      viewResult: '查看结果',
+      viewText: '查看文本',
+      viewImages: '查看图片',
+      downloadFile: '下载文件',
+      viewError: '查看错误',
+      truncated: '内容较长，仅保留前 64KB。',
+      noArtifact: '未从响应中提取到可下载文件。',
+      textResult: '文本结果',
+      errorDetail: '错误详情',
+      imagesResult: '图片结果',
+      downloadFailed: '下载结果失败',
+      imageLoadFailed: '加载图片失败',
+      mediaFiles: '结果文件',
+      downloadMedia: '下载',
+      mediaDownloadFailed: '下载结果文件失败'
     }
   }
 }

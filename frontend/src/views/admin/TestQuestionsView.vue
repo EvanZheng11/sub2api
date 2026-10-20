@@ -81,6 +81,14 @@
                 <button
                   type="button"
                   class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-600 dark:hover:text-gray-300"
+                  :title="t('admin.testQuestions.history.action')"
+                  @click="openHistoryDialog(row)"
+                >
+                  <Icon name="clock" size="sm" />
+                </button>
+                <button
+                  type="button"
+                  class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-600 dark:hover:text-gray-300"
                   :title="t('common.edit')"
                   @click="openEditDialog(row)"
                 >
@@ -183,6 +191,12 @@
       @confirm="confirmDelete"
       @cancel="showDeleteDialog = false"
     />
+
+    <TestRecordHistoryModal
+      :show="showHistoryDialog"
+      :question="historyQuestion"
+      @close="showHistoryDialog = false"
+    />
   </AppLayout>
 </template>
 
@@ -207,6 +221,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Icon from '@/components/icons/Icon.vue'
+import TestRecordHistoryModal from '@/components/admin/testquestion/TestRecordHistoryModal.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -357,6 +372,14 @@ async function confirmDelete() {
     console.error('[测试题库] 删除失败', error)
     appStore.showError(t('admin.testQuestions.deleteFailed'))
   }
+}
+
+const showHistoryDialog = ref(false)
+const historyQuestion = ref<TestQuestion | null>(null)
+
+function openHistoryDialog(question: TestQuestion) {
+  historyQuestion.value = question
+  showHistoryDialog.value = true
 }
 
 onMounted(loadQuestions)

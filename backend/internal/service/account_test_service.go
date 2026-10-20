@@ -30,6 +30,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -37,6 +38,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // sseDataPrefix matches SSE data lines with optional whitespace after colon.
@@ -74,10 +76,12 @@ type TestEvent struct {
 // AccountTestOptions carries optional media for admin connectivity tests.
 // ImageDataURL / AudioDataURL are full data URLs (data:<mime>;base64,...).
 // ReasoningEffort 会在写入任何 SSE 前由 resolveAccountTestReasoningEffort 校验。
+// TestQuestionID > 0 时本次测试会写入该题目的测试历史。
 type AccountTestOptions struct {
 	ImageDataURL    string
 	AudioDataURL    string
 	ReasoningEffort string
+	TestQuestionID  int64
 }
 
 func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
@@ -165,6 +169,9 @@ type AccountTestService struct {
 	// grokWSDialer is optional; realtime account tests use the default OpenAI-style
 	// WS dialer when nil (supports proxy + coder/websocket handshake).
 	grokWSDialer openAIWSClientDialer
+
+	testQuestions    TestQuestionLookup
+	testRecordWriter TestRecordWriter
 }
 
 func (s *AccountTestService) SetSettingService(settingService *SettingService) {
@@ -275,6 +282,8 @@ func NewAccountTestService(
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	testQuestions TestQuestionLookup,
+	testRecordWriter TestRecordWriter,
 ) *AccountTestService {
 	return &AccountTestService{
 		accountRepo:               accountRepo,
@@ -285,6 +294,8 @@ func NewAccountTestService(
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,
+		testQuestions:             testQuestions,
+		testRecordWriter:          testRecordWriter,
 	}
 }
 
@@ -429,6 +440,30 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	if err := validateAccountTestCompactMode(account, modelID, prompt, mode); err != nil {
 		logAccountTestError(c, err.Error())
 		return err
+	}
+
+	// 测试历史：只有带题目 ID 的测试才落库，定时任务与旧客户端不受影响。
+	if testOpts.TestQuestionID > 0 {
+		if s.testQuestions == nil {
+			return s.sendErrorAndEnd(c, "测试题库不可用")
+		}
+		question, err := s.testQuestions.GetByID(ctx, testOpts.TestQuestionID)
+		if err != nil {
+			// 题目可能已被删除：在任何 SSE 写入前返回，handler 用 response.ErrorFrom 映射为 404。
+			logAccountTestError(c, err.Error())
+			return err
+		}
+		recorder := newAccountTestRecorder(TestRecordInput{
+			TestQuestionID:  question.ID,
+			QuestionTitle:   question.Title,
+			AccountID:       account.ID,
+			AccountName:     account.Name,
+			Platform:        account.Platform,
+			Model:           modelID,
+			ReasoningEffort: effort,
+		}, time.Now())
+		c.Set(accountTestRecorderContextKey, recorder)
+		defer s.persistAccountTestRecord(recorder)
 	}
 
 	// Synthetic UI load-test accounts exercise the real SSE parsing and modal
@@ -3487,6 +3522,10 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 			}
 		}
 	}
+	// 测试历史：只累积真正写给客户端的事件，被抑制的事件不计入结果。
+	if recorder := accountTestRecorderFromContext(c); recorder != nil {
+		recorder.capture(event)
+	}
 	eventJSON, _ := json.Marshal(event)
 	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON); err != nil {
 		log.Printf("failed to write SSE event: %v", err)
@@ -3500,6 +3539,29 @@ func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) er
 	logAccountTestError(c, errorMsg)
 	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg})
 	return fmt.Errorf("%s", errorMsg)
+}
+
+// persistAccountTestRecord 在测试结束时写入历史记录；失败只记日志，不影响测试结果。
+func (s *AccountTestService) persistAccountTestRecord(recorder *accountTestRecorder) {
+	if s.testRecordWriter == nil || recorder == nil {
+		return
+	}
+	input, media := recorder.finish(time.Now())
+	// 用 Background：响应已开始写出后请求 context 可能已被取消。
+	ctx := context.Background()
+	if err := s.testRecordWriter.Record(ctx, input, media); err != nil {
+		logger.FromContext(ctx).Warn("account_test_record.persist_failed",
+			zap.Int64("question_id", input.TestQuestionID),
+			zap.Int64("account_id", input.AccountID),
+			zap.Error(err))
+		return
+	}
+	logger.FromContext(ctx).Info("account_test_record.persisted",
+		zap.Int64("question_id", input.TestQuestionID),
+		zap.Int64("account_id", input.AccountID),
+		zap.String("status", input.Status),
+		zap.Int64("latency_ms", input.LatencyMs),
+		zap.Int("media_count", len(media)))
 }
 
 // RunTestBackground executes an account test in-memory (no real HTTP client),

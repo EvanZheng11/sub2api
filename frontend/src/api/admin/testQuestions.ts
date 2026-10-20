@@ -4,6 +4,7 @@
  */
 
 import { apiClient } from '../client'
+import { testRecordsAPI, type TestRecordPage } from './testRecords'
 
 export type TestQuestionType = 'text' | 'image' | 'file'
 
@@ -45,9 +46,15 @@ export async function remove(id: number): Promise<void> {
   await apiClient.delete(`/admin/test-questions/${id}`)
 }
 
+/** 分页查询某道题目的测试历史 */
+export async function records(questionId: number, page = 1, pageSize = 20): Promise<TestRecordPage> {
+  return testRecordsAPI.listByQuestion(questionId, page, pageSize)
+}
+
 export const testQuestionsAPI = {
   list,
   create,
   update,
-  remove
+  remove,
+  records
 }

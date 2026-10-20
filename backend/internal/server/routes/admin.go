@@ -52,6 +52,9 @@ func RegisterAdminRoutes(
 		// 题库管理
 		registerTestQuestionRoutes(admin, h)
 
+		// 测试历史
+		registerTestRecordRoutes(admin, h)
+
 		// OpenAI OAuth
 		registerOpenAIOAuthRoutes(admin, h)
 
@@ -457,9 +460,19 @@ func registerTestQuestionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	testQuestions := admin.Group("/test-questions")
 	{
 		testQuestions.GET("", h.Admin.TestQuestion.List)
+		// 某题目的测试历史
+		testQuestions.GET("/:id/records", h.Admin.TestRecord.ListByQuestion)
 		testQuestions.POST("", h.Admin.TestQuestion.Create)
 		testQuestions.PUT("/:id", h.Admin.TestQuestion.Update)
 		testQuestions.DELETE("/:id", h.Admin.TestQuestion.Delete)
+	}
+}
+
+func registerTestRecordRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	testRecords := admin.Group("/test-records")
+	{
+		testRecords.GET("/:id", h.Admin.TestRecord.Get)
+		testRecords.GET("/:id/files/:file_id", h.Admin.TestRecord.File)
 	}
 }
 

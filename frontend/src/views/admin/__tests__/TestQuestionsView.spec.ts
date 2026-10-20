@@ -99,7 +99,12 @@ function mountView() {
         ConfirmDialog: ConfirmDialogStub,
         Select: { template: '<div class="select-stub"></div>' },
         EmptyState: { template: '<div class="empty-stub"></div>' },
-        Icon: true
+        Icon: true,
+        TestRecordHistoryModal: {
+          props: { show: Boolean, question: Object },
+          emits: ['close'],
+          template: '<div v-if="show" class="history-modal-stub">{{ question ? question.id : "" }}</div>'
+        }
       }
     }
   })
@@ -194,5 +199,21 @@ describe('管理员测试题库页面', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('恢复后的题目')
+  })
+
+  it('操作列的测试历史按钮打开历史弹框并带上当前题目', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const historyButton = wrapper
+      .findAll('button')
+      .find((button) => button.attributes('title') === 'admin.testQuestions.history.action')
+    expect(historyButton).toBeTruthy()
+    await historyButton!.trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('.history-modal-stub')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toBe('1')
   })
 })

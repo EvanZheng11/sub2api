@@ -539,4 +539,34 @@ describe('AccountTestModal 题库与文件结果', () => {
     expect((wrapper.vm as any).availableModels.map((m: any) => m.id)).toEqual(['new-model'])
     expect((wrapper.vm as any).selectedModelId).toBe('new-model')
   })
+
+  it('请求体带上当前选中测试题的 test_question_id', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      createStreamResponse([
+        { type: 'content', text: 'ok' },
+        { type: 'test_complete', success: true }
+      ])
+    ) as any
+
+    const wrapper = mountModal({
+      id: 41,
+      name: 'OpenAI OAuth',
+      platform: 'openai',
+      type: 'oauth',
+      status: 'active'
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    // mock 返回的首题 id 为 1，弹框打开后会自动选中它
+    expect((wrapper.vm as any).selectedQuestionId).toBe('1')
+
+    await (wrapper.vm as any).startTest()
+    await flushPromises()
+
+    const calls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+    const last = calls[calls.length - 1]
+    const body = JSON.parse((last?.[1] as { body: string }).body)
+    expect(body.test_question_id).toBe(1)
+  })
 })
