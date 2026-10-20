@@ -44,6 +44,38 @@ export default {
       type: 'Type',
       prompt: 'Prompt',
       promptPlaceholder: 'Enter the full prompt sent to the model'
+    },
+    history: {
+      action: 'Test History',
+      title: 'Test History',
+      loadFailed: 'Failed to load test history',
+      detailFailed: 'Failed to load test record detail',
+      empty: 'No test records',
+      emptyHint: 'This question has not been used for an account test yet.',
+      columns: {
+        createdAt: 'Recorded At',
+        account: 'Account',
+        model: 'Model',
+        reasoningEffort: 'Reasoning Effort',
+        latency: 'Duration',
+        status: 'Status',
+        result: 'Result'
+      },
+      status: {
+        success: 'Success',
+        failed: 'Failed'
+      },
+      viewText: 'View Text',
+      viewImages: 'View Images',
+      downloadFile: 'Download File',
+      viewError: 'View Error',
+      truncated: 'Content is long, only the first 64KB is kept.',
+      noArtifact: 'No downloadable file was found in the response.',
+      textResult: 'Text Result',
+      errorDetail: 'Error Detail',
+      imagesResult: 'Images',
+      downloadFailed: 'Failed to download the result',
+      imageLoadFailed: 'Failed to load the image'
     }
   }
 }

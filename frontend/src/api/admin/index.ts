@@ -26,6 +26,7 @@ import dataManagementAPI from './dataManagement'
 import apiKeysAPI from './apiKeys'
 import scheduledTestsAPI from './scheduledTests'
 import { testQuestionsAPI } from './testQuestions'
+import { testRecordsAPI } from './testRecords'
 import backupAPI from './backup'
 import tlsFingerprintProfileAPI from './tlsFingerprintProfile'
 import channelsAPI from './channels'
@@ -65,6 +66,7 @@ export const adminAPI = {
   apiKeys: apiKeysAPI,
   scheduledTests: scheduledTestsAPI,
   testQuestions: testQuestionsAPI,
+  testRecords: testRecordsAPI,
   backup: backupAPI,
   tlsFingerprintProfiles: tlsFingerprintProfileAPI,
   channels: channelsAPI,
@@ -102,6 +104,7 @@ export {
   apiKeysAPI,
   scheduledTestsAPI,
   testQuestionsAPI,
+  testRecordsAPI,
   backupAPI,
   tlsFingerprintProfileAPI,
   channelsAPI,
