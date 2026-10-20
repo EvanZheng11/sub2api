@@ -1171,13 +1171,16 @@ const startTest = async () => {
     const requestBody: {
       model_id: string
       prompt: string
+      test_question_id: number
       mode?: string
       reasoning_effort?: string
       image_data_url?: string
       audio_data_url?: string
     } = {
       model_id: showModelSelect.value ? selectedModelId.value : '',
-      prompt: supportsPromptInput.value ? testPrompt.value.trim() : ''
+      prompt: supportsPromptInput.value ? testPrompt.value.trim() : '',
+      // 当前选中的测试题 ID，0 表示本次测试不写入测试历史
+      test_question_id: selectedQuestionId.value ? Number(selectedQuestionId.value) : 0
     }
     if (selectedReasoningEffort.value) {
       requestBody.reasoning_effort = selectedReasoningEffort.value
