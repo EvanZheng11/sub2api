@@ -3,13 +3,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 import TestQuestionsView from '../TestQuestionsView.vue'
 
-const { list, create, update, remove, showSuccess, showError } = vi.hoisted(() => ({
+const {
+  list,
+  create,
+  update,
+  remove,
+  showSuccess,
+  showError,
+  userList,
+  userCreate,
+  authState
+} = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
   showSuccess: vi.fn(),
-  showError: vi.fn()
+  showError: vi.fn(),
+  userList: vi.fn(),
+  userCreate: vi.fn(),
+  authState: { isAdmin: true }
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -23,8 +36,19 @@ vi.mock('@/api/admin', () => ({
   }
 }))
 
+vi.mock('@/api/testCenter', () => ({
+  testCenterAPI: {
+    listQuestions: userList,
+    createQuestion: userCreate
+  }
+}))
+
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({ showSuccess, showError })
+}))
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => authState
 }))
 
 vi.mock('vue-i18n', async (importOriginal) => ({
@@ -101,9 +125,15 @@ function mountView() {
         EmptyState: { template: '<div class="empty-stub"></div>' },
         Icon: true,
         TestRecordHistoryModal: {
+          props: { show: Boolean, question: Object, userMode: Boolean },
+          emits: ['close'],
+          template:
+            '<div v-if="show" class="history-modal-stub">{{ question ? question.id : "" }}{{ userMode ? "-user" : "" }}</div>'
+        },
+        TestQuestionTestModal: {
           props: { show: Boolean, question: Object },
           emits: ['close'],
-          template: '<div v-if="show" class="history-modal-stub">{{ question ? question.id : "" }}</div>'
+          template: '<div v-if="show" class="test-modal-stub">{{ question ? question.id : "" }}</div>'
         }
       }
     }
@@ -112,10 +142,13 @@ function mountView() {
 
 describe('管理员测试题库页面', () => {
   beforeEach(() => {
+    authState.isAdmin = true
     list.mockResolvedValue([question(1, '基础连通性'), question(2, '文件输出')])
     create.mockReset().mockResolvedValue(question(3, '新题目'))
     update.mockReset().mockResolvedValue(question(1, '更新后的题目'))
     remove.mockReset().mockResolvedValue(undefined)
+    userList.mockReset().mockResolvedValue([question(1, '基础连通性')])
+    userCreate.mockReset().mockResolvedValue(question(3, '新题目'))
     showSuccess.mockReset()
     showError.mockReset()
   })
@@ -199,6 +232,64 @@ describe('管理员测试题库页面', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('恢复后的题目')
+  })
+
+  it('管理员可以打开题目测试弹框，并带上当前题目', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const testButton = wrapper
+      .findAll('button')
+      .find((button) => button.attributes('title') === 'admin.testQuestions.test.action')
+    expect(testButton).toBeTruthy()
+    await testButton!.trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('.test-modal-stub')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toBe('1')
+  })
+
+  it('普通用户只看到测试与历史入口，新建走用户侧接口且无编辑删除', async () => {
+    authState.isAdmin = false
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(userList).toHaveBeenCalledTimes(1)
+    expect(list).not.toHaveBeenCalled()
+    expect(
+      wrapper.findAll('button').some((button) => button.attributes('title') === 'common.edit')
+    ).toBe(false)
+    expect(
+      wrapper.findAll('button').some((button) => button.attributes('title') === 'common.delete')
+    ).toBe(false)
+    expect(
+      wrapper.findAll('button').some((button) => button.attributes('title') === 'admin.testQuestions.test.action')
+    ).toBe(true)
+
+    const createButton = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('admin.testQuestions.createQuestion'))
+    expect(createButton).toBeTruthy()
+    await createButton!.trigger('click')
+    await wrapper.find('#test-question-title').setValue('用户新题目')
+    await wrapper.find('#test-question-prompt').setValue('请输出一段文本')
+    await wrapper.find('form#test-question-form').trigger('submit')
+    await flushPromises()
+
+    expect(userCreate).toHaveBeenCalledWith({
+      title: '用户新题目',
+      prompt: '请输出一段文本',
+      type: 'text'
+    })
+    expect(create).not.toHaveBeenCalled()
+
+    const historyButton = wrapper
+      .findAll('button')
+      .find((button) => button.attributes('title') === 'admin.testQuestions.history.action')
+    await historyButton!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.history-modal-stub').text()).toBe('1-user')
   })
 
   it('操作列的测试历史按钮打开历史弹框并带上当前题目', async () => {

@@ -45,6 +45,16 @@ export default {
       prompt: 'Prompt',
       promptPlaceholder: 'Enter the full prompt sent to the model'
     },
+    test: {
+      action: 'Test',
+      title: 'Test Question',
+      account: 'Test account',
+      accountPlaceholder: 'Select an account to test',
+      accountLoadFailed: 'Failed to load available accounts',
+      noAccount: 'No account is available for testing. Ask an administrator to grant a group.',
+      modelLoadFailed: 'Failed to load account models',
+      starting: 'Starting test on account: {account}'
+    },
     history: {
       action: 'Test History',
       title: 'Test History',

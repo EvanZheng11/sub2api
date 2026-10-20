@@ -308,6 +308,15 @@ func (s *AccountService) ListByPlatform(ctx context.Context, platform string) ([
 	return accounts, nil
 }
 
+// ListActive 返回全部活跃账号（管理端题库测试可选全部账号）。
+func (s *AccountService) ListActive(ctx context.Context) ([]Account, error) {
+	accounts, err := s.accountRepo.ListActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active accounts: %w", err)
+	}
+	return accounts, nil
+}
+
 // ListByGroup 根据分组获取账号列表
 func (s *AccountService) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
 	accounts, err := s.accountRepo.ListByGroup(ctx, groupID)

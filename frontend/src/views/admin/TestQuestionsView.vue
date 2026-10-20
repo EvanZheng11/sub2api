@@ -81,12 +81,21 @@
                 <button
                   type="button"
                   class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-600 dark:hover:text-gray-300"
+                  :title="t('admin.testQuestions.test.action')"
+                  @click="openTestDialog(row)"
+                >
+                  <Icon name="play" size="sm" />
+                </button>
+                <button
+                  type="button"
+                  class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-600 dark:hover:text-gray-300"
                   :title="t('admin.testQuestions.history.action')"
                   @click="openHistoryDialog(row)"
                 >
                   <Icon name="clock" size="sm" />
                 </button>
                 <button
+                  v-if="isAdmin"
                   type="button"
                   class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-600 dark:hover:text-gray-300"
                   :title="t('common.edit')"
@@ -95,6 +104,7 @@
                   <Icon name="edit" size="sm" />
                 </button>
                 <button
+                  v-if="isAdmin"
                   type="button"
                   class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
                   :title="t('common.delete')"
@@ -195,7 +205,14 @@
     <TestRecordHistoryModal
       :show="showHistoryDialog"
       :question="historyQuestion"
+      :user-mode="!isAdmin"
       @close="showHistoryDialog = false"
+    />
+
+    <TestQuestionTestModal
+      :show="showTestDialog"
+      :question="testingQuestion"
+      @close="showTestDialog = false"
     />
   </AppLayout>
 </template>
@@ -210,7 +227,9 @@ import type {
   TestQuestionType
 } from '@/api/admin/testQuestions'
 import { adminAPI } from '@/api/admin'
+import { testCenterAPI } from '@/api/testCenter'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
 
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -222,9 +241,13 @@ import Select from '@/components/common/Select.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Icon from '@/components/icons/Icon.vue'
 import TestRecordHistoryModal from '@/components/admin/testquestion/TestRecordHistoryModal.vue'
+import TestQuestionTestModal from '@/components/admin/testquestion/TestQuestionTestModal.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const authStore = useAuthStore()
+// 普通用户可见题库，但只能新建、发起测试与查看结果，不能修改/删除题目。
+const isAdmin = computed(() => authStore.isAdmin)
 
 const questions = ref<TestQuestion[]>([])
 const loading = ref(false)
@@ -277,7 +300,9 @@ async function loadQuestions() {
   loading.value = true
   loadError.value = ''
   try {
-    questions.value = await adminAPI.testQuestions.list()
+    questions.value = isAdmin.value
+      ? await adminAPI.testQuestions.list()
+      : await testCenterAPI.listQuestions()
     console.info('[测试题库] 已加载', questions.value.length, '道题目')
   } catch (error) {
     console.error('[测试题库] 加载失败', error)
@@ -338,8 +363,11 @@ async function handleSave() {
     if (editingQuestion.value) {
       await adminAPI.testQuestions.update(editingQuestion.value.id, payload)
       appStore.showSuccess(t('admin.testQuestions.updated'))
-    } else {
+    } else if (isAdmin.value) {
       await adminAPI.testQuestions.create(payload)
+      appStore.showSuccess(t('admin.testQuestions.created'))
+    } else {
+      await testCenterAPI.createQuestion(payload)
       appStore.showSuccess(t('admin.testQuestions.created'))
     }
     closeEditDialog()
@@ -380,6 +408,14 @@ const historyQuestion = ref<TestQuestion | null>(null)
 function openHistoryDialog(question: TestQuestion) {
   historyQuestion.value = question
   showHistoryDialog.value = true
+}
+
+const showTestDialog = ref(false)
+const testingQuestion = ref<TestQuestion | null>(null)
+
+function openTestDialog(question: TestQuestion) {
+  testingQuestion.value = question
+  showTestDialog.value = true
 }
 
 onMounted(loadQuestions)
