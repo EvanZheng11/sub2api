@@ -230,6 +230,162 @@ describe('测试历史弹框', () => {
     expect(wrapper.find('.detail-images img').exists()).toBe(true)
   })
 
+  it('详情里列出非图片结果文件并提供下载入口', async () => {
+    get.mockResolvedValueOnce(
+      record({
+        id: 2,
+        files: [
+          { id: 10, kind: 'image', mime_type: 'image/png', size_bytes: 3 },
+          { id: 11, kind: 'audio', mime_type: 'audio/mpeg', size_bytes: 2048 },
+          { id: 12, kind: 'video', mime_type: 'video/mp4', size_bytes: 4096 }
+        ]
+      })
+    )
+    const wrapper = mountModal()
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === 'admin.testQuestions.history.viewText')!
+      .trigger('click')
+    await flushPromises()
+
+    const buttons = wrapper.findAll('.detail-media-download')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0].attributes('title')).toBe('test-2-11.mp3')
+    expect(buttons[1].attributes('title')).toBe('test-2-12.mp4')
+    const text = wrapper.find('.detail-media').text()
+    expect(text).toContain('audio/mpeg')
+    expect(text).toContain('video/mp4')
+    expect(text).toContain('admin.testQuestions.history.downloadMedia')
+    // 图片不重复列出
+    expect(text).not.toContain('image/png')
+  })
+
+  it('点击下载结果文件取 blob 并触发 a.click 后释放 objectURL', async () => {
+    get.mockResolvedValueOnce(
+      record({ id: 2, files: [{ id: 11, kind: 'audio', mime_type: 'audio/mpeg', size_bytes: 2048 }] })
+    )
+    const wrapper = mountModal()
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === 'admin.testQuestions.history.viewText')!
+      .trigger('click')
+    await flushPromises()
+
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    await wrapper.find('.detail-media-download').trigger('click')
+    await flushPromises()
+
+    expect(fetchFile).toHaveBeenCalledWith(2, 11)
+    expect(clickSpy).toHaveBeenCalled()
+    // 释放改由 setTimeout(0) 延后一括，等一拍再断言
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock')
+    clickSpy.mockRestore()
+  })
+
+  it('纯音频记录（无文本无图片）可在列表直接查看结果并下载附件', async () => {
+    listByQuestion.mockResolvedValueOnce({
+      items: [record({ id: 5, account_name: '音频账号', has_text: false, image_count: 0 })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+    get.mockResolvedValueOnce(
+      record({
+        id: 5,
+        status: 'success',
+        has_text: false,
+        image_count: 0,
+        response_text: '',
+        files: [{ id: 21, kind: 'audio', mime_type: 'audio/mpeg', size_bytes: 2048 }]
+      })
+    )
+    const wrapper = mountModal()
+    await flushPromises()
+
+    // 列表里没有查看文本/图片按钮，但有“查看结果”入口
+    const titles = wrapper.findAll('button').map((b) => b.attributes('title'))
+    expect(titles).not.toContain('admin.testQuestions.history.viewText')
+    expect(titles).not.toContain('admin.testQuestions.history.viewImages')
+    expect(titles).toContain('admin.testQuestions.history.viewResult')
+
+    await wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === 'admin.testQuestions.history.viewResult')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(get).toHaveBeenCalledWith(5)
+    // 无文本时隐藏复制与文本区，保留结果文件区
+    expect(wrapper.find('.copy-text').exists()).toBe(false)
+    expect(wrapper.find('.detail-text').exists()).toBe(false)
+    expect(wrapper.find('.detail-media').exists()).toBe(true)
+
+    const download = wrapper.find('.detail-media-download')
+    expect(download.exists()).toBe(true)
+    expect(download.attributes('title')).toBe('test-5-21.mp3')
+
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    await download.trigger('click')
+    await flushPromises()
+
+    expect(fetchFile).toHaveBeenCalledWith(5, 21)
+    expect(clickSpy).toHaveBeenCalled()
+    clickSpy.mockRestore()
+  })
+
+  it('没有非图片文件时不渲染结果文件区块', async () => {
+    get.mockResolvedValueOnce(
+      record({ id: 2, files: [{ id: 10, kind: 'image', mime_type: 'image/png', size_bytes: 3 }] })
+    )
+    const wrapper = mountModal()
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === 'admin.testQuestions.history.viewText')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.detail-media').exists()).toBe(false)
+
+    // files 为空同样不渲染
+    get.mockResolvedValueOnce(record({ id: 2, files: [] }))
+    await wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === 'admin.testQuestions.history.viewText')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.detail-media').exists()).toBe(false)
+  })
+
+  it('下载结果文件失败时提示错误且保留已有结果', async () => {
+    get.mockResolvedValueOnce(
+      record({ id: 2, files: [{ id: 11, kind: 'video', mime_type: 'video/mp4', size_bytes: 4096 }] })
+    )
+    fetchFile.mockRejectedValueOnce(new Error('boom'))
+    const wrapper = mountModal()
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .find((b) => b.attributes('title') === 'admin.testQuestions.history.viewText')!
+      .trigger('click')
+    await flushPromises()
+
+    await wrapper.find('.detail-media-download').trigger('click')
+    await flushPromises()
+
+    expect(showError).toHaveBeenCalledWith('admin.testQuestions.history.mediaDownloadFailed')
+    expect(wrapper.findAll('.detail-media-download')).toHaveLength(1)
+  })
+
   it('没有记录时展示空态', async () => {
     listByQuestion.mockResolvedValueOnce({
       items: [],

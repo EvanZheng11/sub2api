@@ -108,6 +108,16 @@ func TestAccountTestRecorderSkipsMalformedDataURL(t *testing.T) {
 	require.Empty(t, media)
 }
 
+// 远程 https 媒体无法离线落盘，功能上仍跳过（可观测性由 warn 日志承担，这里不断言日志）。
+func TestAccountTestRecorderSkipsRemoteMediaURL(t *testing.T) {
+	recorder := newTestRecorder()
+	recorder.capture(TestEvent{Type: "image", ImageURL: "https://example.com/a.png"})
+
+	_, media := recorder.finish(time.Now())
+
+	require.Empty(t, media)
+}
+
 func TestDecodeTestRecordDataURL(t *testing.T) {
 	mime, payload, ok := decodeTestRecordDataURL("data:text/plain;base64,aGVsbG8=")
 	require.True(t, ok)

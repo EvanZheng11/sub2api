@@ -231,7 +231,18 @@ func (r *accountTestRecorder) appendMedia(kind, mimeType, dataURL string) {
 		return
 	}
 	decodedMime, payload, ok := decodeTestRecordDataURL(dataURL)
-	if !ok || len(payload) == 0 {
+	if !ok {
+		// 完全不是 data URL 的媒体（例如 Grok 生图只给 https 地址）无法离线落盘。
+		// 不为此引入网络下载，只记一条 warn 让丢弃可观测；空值与 data URL 解析失败仍静默跳过。
+		if dataURL != "" && !strings.HasPrefix(dataURL, "data:") {
+			logger.FromContext(context.Background()).Warn("account_test_record.media_not_persisted",
+				zap.String("kind", kind),
+				zap.String("field", kind+"_url"),
+				zap.Int("content_length", len(dataURL)))
+		}
+		return
+	}
+	if len(payload) == 0 {
 		return
 	}
 	if strings.TrimSpace(mimeType) == "" {

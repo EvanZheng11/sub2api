@@ -7,19 +7,29 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// 列表查询不取 response_text，只取是否非空的布尔值，避免大 payload。
-const accountTestRecordListSQL = `
-SELECT id, test_question_id, question_title, account_id, account_name, platform, model,
-       reasoning_effort, status, error_message, (response_text <> '') AS has_text,
-       response_truncated, image_count, latency_ms, created_at
+// accountTestRecordColumns 返回列表与详情共用的列清单（顺序必须与 scanAccountTestRecord 一致）。
+// 正文列由调用方传入：列表用空字符串占位以避免大 payload，详情取真实列。
+// has_text 显式取真实列 account_test_records.response_text，所以列表用占位符时它仍是真实值
+// （SELECT 列表里的输出别名不可见，这里依然显式限定表名以免误读）。
+func accountTestRecordColumns(responseTextExpr string) string {
+	return `id, test_question_id, question_title, account_id, account_name, platform, model,
+       reasoning_effort, status, error_message, ` + responseTextExpr + `,
+       (account_test_records.response_text <> '') AS has_text,
+       response_truncated, image_count, latency_ms, started_at, finished_at, created_at`
+}
+
+var (
+	// 列表查询不取 response_text，只取是否非空的布尔值，避免大 payload。
+	accountTestRecordListSQL = `SELECT ` + accountTestRecordColumns(`''::text AS response_text`) + `
 FROM account_test_records`
 
-// 详情查询额外取完整文本与起止时间。
-const accountTestRecordDetailSQL = `
-SELECT id, test_question_id, question_title, account_id, account_name, platform, model,
-       reasoning_effort, status, error_message, response_text, (response_text <> '') AS has_text,
-       response_truncated, image_count, latency_ms, started_at, finished_at, created_at
+	// 详情查询额外取完整文本。
+	accountTestRecordDetailSQL = `SELECT ` + accountTestRecordColumns(`response_text`) + `
 FROM account_test_records`
+
+	// 写入后回读的列与详情保持一致，复用同一个扫描函数。
+	accountTestRecordReturningSQL = `RETURNING ` + accountTestRecordColumns(`response_text`)
+)
 
 const accountTestRecordFileSelectSQL = `
 SELECT id, record_id, kind, mime_type, path, size_bytes, created_at
@@ -35,16 +45,14 @@ func NewTestRecordRepository(db *sql.DB) service.TestRecordRepository {
 }
 
 func (r *accountTestRecordRepository) Create(ctx context.Context, input service.TestRecordInput) (*service.TestRecord, error) {
-	item, err := scanAccountTestRecordDetail(r.db.QueryRowContext(ctx, `
+	item, err := scanAccountTestRecord(r.db.QueryRowContext(ctx, `
 INSERT INTO account_test_records (
     test_question_id, question_title, account_id, account_name, platform, model,
     reasoning_effort, status, error_message, response_text, response_truncated,
     latency_ms, started_at, finished_at
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-RETURNING id, test_question_id, question_title, account_id, account_name, platform, model,
-          reasoning_effort, status, error_message, response_text, (response_text <> '') AS has_text,
-          response_truncated, image_count, latency_ms, started_at, finished_at, created_at`,
+`+accountTestRecordReturningSQL,
 		input.TestQuestionID, input.QuestionTitle, nullableAccountID(input.AccountID),
 		input.AccountName, input.Platform, input.Model, input.ReasoningEffort,
 		input.Status, input.ErrorMessage, input.ResponseText, input.ResponseTruncated,
@@ -75,7 +83,7 @@ func (r *accountTestRecordRepository) ListByQuestion(ctx context.Context, questi
 
 	items := make([]service.TestRecord, 0, 16)
 	for rows.Next() {
-		item, err := scanAccountTestRecordList(rows)
+		item, err := scanAccountTestRecord(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +104,7 @@ func (r *accountTestRecordRepository) CountByQuestion(ctx context.Context, quest
 }
 
 func (r *accountTestRecordRepository) GetByID(ctx context.Context, id int64) (*service.TestRecord, error) {
-	item, err := scanAccountTestRecordDetail(r.db.QueryRowContext(ctx,
+	item, err := scanAccountTestRecord(r.db.QueryRowContext(ctx,
 		accountTestRecordDetailSQL+` WHERE id = $1`, id))
 	if err != nil {
 		return nil, translatePersistenceError(err, service.ErrTestRecordNotFound, nil)
@@ -227,21 +235,7 @@ type accountTestRecordScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanAccountTestRecordList(row accountTestRecordScanner) (*service.TestRecord, error) {
-	var item service.TestRecord
-	var accountID sql.NullInt64
-	if err := row.Scan(
-		&item.ID, &item.TestQuestionID, &item.QuestionTitle, &accountID, &item.AccountName,
-		&item.Platform, &item.Model, &item.ReasoningEffort, &item.Status, &item.ErrorMessage,
-		&item.HasText, &item.ResponseTruncated, &item.ImageCount, &item.LatencyMs, &item.CreatedAt,
-	); err != nil {
-		return nil, err
-	}
-	assignNullableAccountID(&item, accountID)
-	return &item, nil
-}
-
-func scanAccountTestRecordDetail(row accountTestRecordScanner) (*service.TestRecord, error) {
+func scanAccountTestRecord(row accountTestRecordScanner) (*service.TestRecord, error) {
 	var item service.TestRecord
 	var accountID sql.NullInt64
 	if err := row.Scan(

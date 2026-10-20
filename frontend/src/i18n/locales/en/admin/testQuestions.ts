@@ -65,6 +65,7 @@ export default {
         success: 'Success',
         failed: 'Failed'
       },
+      viewResult: 'View Result',
       viewText: 'View Text',
       viewImages: 'View Images',
       downloadFile: 'Download File',
@@ -75,7 +76,10 @@ export default {
       errorDetail: 'Error Detail',
       imagesResult: 'Images',
       downloadFailed: 'Failed to download the result',
-      imageLoadFailed: 'Failed to load the image'
+      imageLoadFailed: 'Failed to load the image',
+      mediaFiles: 'Result Files',
+      downloadMedia: 'Download',
+      mediaDownloadFailed: 'Failed to download the result file'
     }
   }
 }

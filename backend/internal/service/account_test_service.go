@@ -76,13 +76,12 @@ type TestEvent struct {
 // AccountTestOptions carries optional media for admin connectivity tests.
 // ImageDataURL / AudioDataURL are full data URLs (data:<mime>;base64,...).
 // ReasoningEffort 会在写入任何 SSE 前由 resolveAccountTestReasoningEffort 校验。
-// TestQuestionID > 0 时本次测试会写入该题目的测试历史（TestQuestionTitle 由 service 侧查库回填）。
+// TestQuestionID > 0 时本次测试会写入该题目的测试历史。
 type AccountTestOptions struct {
-	ImageDataURL      string
-	AudioDataURL      string
-	ReasoningEffort   string
-	TestQuestionID    int64
-	TestQuestionTitle string
+	ImageDataURL    string
+	AudioDataURL    string
+	ReasoningEffort string
+	TestQuestionID  int64
 }
 
 func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
@@ -454,7 +453,6 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 			logAccountTestError(c, err.Error())
 			return err
 		}
-		testOpts.TestQuestionTitle = question.Title
 		recorder := newAccountTestRecorder(TestRecordInput{
 			TestQuestionID:  question.ID,
 			QuestionTitle:   question.Title,

@@ -65,6 +65,7 @@ export default {
         success: '成功',
         failed: '失败'
       },
+      viewResult: '查看结果',
       viewText: '查看文本',
       viewImages: '查看图片',
       downloadFile: '下载文件',
@@ -75,7 +76,10 @@ export default {
       errorDetail: '错误详情',
       imagesResult: '图片结果',
       downloadFailed: '下载结果失败',
-      imageLoadFailed: '加载图片失败'
+      imageLoadFailed: '加载图片失败',
+      mediaFiles: '结果文件',
+      downloadMedia: '下载',
+      mediaDownloadFailed: '下载结果文件失败'
     }
   }
 }

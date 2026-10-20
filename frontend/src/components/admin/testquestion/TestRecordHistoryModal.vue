@@ -66,6 +66,16 @@
               {{ t('admin.testQuestions.history.viewText') }}
             </button>
             <button
+              v-if="!row.has_text && row.image_count === 0"
+              type="button"
+              class="btn btn-secondary btn-sm"
+              :title="t('admin.testQuestions.history.viewResult')"
+              @click="openDetail(row, 'text')"
+            >
+              <Icon name="document" size="sm" class="mr-1" />
+              {{ t('admin.testQuestions.history.viewResult') }}
+            </button>
+            <button
               v-if="row.image_count > 0"
               type="button"
               class="btn btn-secondary btn-sm"
@@ -136,6 +146,8 @@
       <p v-if="detailLoading" class="text-sm text-gray-500 dark:text-dark-400">…</p>
 
       <template v-else-if="detailMode === 'text'">
+        <!-- 纯音频/视频等无文本记录：隐藏复制与文本/文件提取区，只留公共结果文件区 -->
+        <template v-if="detailHasText">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <p v-if="detailRecord?.response_truncated" class="text-xs text-orange-600 dark:text-orange-400">
             {{ t('admin.testQuestions.history.truncated') }}
@@ -165,6 +177,7 @@
         <pre
           class="detail-text max-h-[360px] overflow-auto rounded-lg bg-gray-900 p-3 font-mono text-xs text-gray-100"
         >{{ detailRecord?.response_text || '' }}</pre>
+        </template>
       </template>
 
       <template v-else-if="detailMode === 'error'">
@@ -196,6 +209,34 @@
           class="max-h-[360px] w-full rounded-lg border border-gray-200 bg-gray-50 object-contain dark:border-dark-500 dark:bg-dark-800"
         />
       </template>
+
+      <!-- 结果文件区：与查看模式无关，音频/视频等非图片文件统一在这里提供下载入口 -->
+      <div
+        v-if="detailMediaFiles.length > 0"
+        class="detail-media space-y-2 rounded-lg border border-gray-200 p-3 dark:border-dark-500"
+      >
+        <p class="text-sm font-medium text-gray-700 dark:text-gray-200">
+          {{ t('admin.testQuestions.history.mediaFiles') }}
+        </p>
+        <div
+          v-for="file in detailMediaFiles"
+          :key="file.id"
+          class="flex flex-wrap items-center justify-between gap-2"
+        >
+          <span class="text-xs text-gray-600 dark:text-gray-300">
+            {{ file.mime_type || file.kind }} · {{ formatBytes(file.size_bytes) }}
+          </span>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm detail-media-download"
+            :title="mediaFileName(file)"
+            @click="downloadDetailMedia(file)"
+          >
+            <Icon name="download" size="sm" class="mr-1" />
+            {{ t('admin.testQuestions.history.downloadMedia') }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <template #footer>
@@ -212,11 +253,11 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Column } from '@/components/common/types'
-import { testRecordsAPI, type TestRecord } from '@/api/admin/testRecords'
+import { testRecordsAPI, type TestRecord, type TestRecordFile } from '@/api/admin/testRecords'
 import type { TestQuestion } from '@/api/admin/testQuestions'
 import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
-import { formatDateTime } from '@/utils/format'
+import { formatBytes, formatDateTime } from '@/utils/format'
 import {
   buildTestArtifact,
   downloadTestArtifact,
@@ -281,6 +322,38 @@ const detailTitle = computed(() => {
   if (detailMode.value === 'error') return t('admin.testQuestions.history.errorDetail')
   return t('admin.testQuestions.history.imagesResult')
 })
+
+const detailHasText = computed(() => Boolean(detailRecord.value?.response_text))
+
+// 结果文件区只列非图片文件：图片已在 images 模式给过预览，不再重复列出
+const detailMediaFiles = computed<TestRecordFile[]>(() =>
+  (detailRecord.value?.files ?? []).filter((file) => file.kind !== 'image')
+)
+
+// 与后端落盘命名（test-<record>-<file>.<ext>）保持一致，扩展名优先由 MIME 推导
+const mediaExtensions: Record<string, string> = {
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/ogg': 'ogg',
+  'audio/webm': 'weba',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov'
+}
+
+function mediaExtension(mimeType: string): string {
+  const mime = (mimeType || '').toLowerCase().trim()
+  if (mediaExtensions[mime]) return mediaExtensions[mime]
+  // 未知类型退回 MIME 子类型（去掉 +xml 之类的后缀），再不行用 bin
+  const subtype = (mime.split('/')[1] ?? '').split('+')[0].replace(/[^a-z0-9]/g, '')
+  return subtype || 'bin'
+}
+
+function mediaFileName(file: TestRecordFile): string {
+  return `test-${detailRecord.value?.id ?? 0}-${file.id}.${mediaExtension(file.mime_type)}`
+}
 
 const columns = computed<Column[]>(() => [
   { key: 'created_at', label: t('admin.testQuestions.history.columns.createdAt') },
@@ -441,6 +514,26 @@ async function downloadFromRecord(row: TestRecord) {
   } catch (error) {
     console.error('[测试历史] 下载失败', error)
     appStore.showError(t('admin.testQuestions.history.downloadFailed'))
+  }
+}
+
+async function downloadDetailMedia(file: TestRecordFile) {
+  const record = detailRecord.value
+  if (!record) return
+  try {
+    const blob = await testRecordsAPI.fetchFile(record.id, file.id)
+    if (typeof URL.createObjectURL !== 'function') return
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = mediaFileName(file)
+    link.rel = 'noopener'
+    link.click()
+    // 下载已触发，延后一拍释放 objectURL（与 utils/testArtifact 一致），避免下载还没开始就被回收
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  } catch (error) {
+    console.error('[测试历史] 下载结果文件失败', file.id, error)
+    appStore.showError(t('admin.testQuestions.history.mediaDownloadFailed'))
   }
 }
 
