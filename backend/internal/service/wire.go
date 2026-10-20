@@ -264,6 +264,8 @@ func ProvideAccountTestService(
 	openAIGatewayService *OpenAIGatewayService,
 	settingService *SettingService,
 	pluginManager *PluginManager,
+	testQuestions TestQuestionLookup,
+	testRecordWriter TestRecordWriter,
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
@@ -274,6 +276,8 @@ func ProvideAccountTestService(
 		httpUpstream,
 		cfg,
 		tlsFPProfileService,
+		testQuestions,
+		testRecordWriter,
 	)
 	service.agentIdentityWS = openAIGatewayService
 	service.SetOpenAIGatewayService(openAIGatewayService)
@@ -876,6 +880,10 @@ var ProviderSet = wire.NewSet(
 	ProvideBillingCacheService,
 	NewAnnouncementService,
 	NewTestQuestionService,
+	NewTestRecordService,
+	wire.Bind(new(TestRecordWriter), new(*TestRecordService)),
+	wire.Bind(new(TestRecordStore), new(*TestRecordService)),
+	wire.Bind(new(TestQuestionLookup), new(*TestQuestionService)),
 	NewAdminService,
 	NewGatewayService,
 	NewOpenAIGatewayService,

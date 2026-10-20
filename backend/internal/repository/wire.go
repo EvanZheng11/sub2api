@@ -83,6 +83,7 @@ var ProviderSet = wire.NewSet(
 	NewUsageBillingRepository,
 	NewBatchImageRepository,
 	NewTestQuestionRepository, // 题库仓储（raw SQL）
+	NewTestRecordRepository,   // 测试记录仓储（raw SQL）
 	NewGeminiCachedContentRepository,
 	NewIdempotencyRepository,
 	NewUsageCleanupRepository,

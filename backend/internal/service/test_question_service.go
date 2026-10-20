@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // 题库题目类型，必须与 test_questions 表的 CHECK 约束保持一致。
@@ -58,15 +60,23 @@ type TestQuestionRepository interface {
 
 // TestQuestionService 题库业务逻辑。
 type TestQuestionService struct {
-	repo TestQuestionRepository
+	repo    TestQuestionRepository
+	records TestRecordStore
 }
 
-func NewTestQuestionService(repo TestQuestionRepository) *TestQuestionService {
-	return &TestQuestionService{repo: repo}
+func NewTestQuestionService(repo TestQuestionRepository, records TestRecordStore) *TestQuestionService {
+	return &TestQuestionService{repo: repo, records: records}
 }
 
 func (s *TestQuestionService) List(ctx context.Context) ([]TestQuestion, error) {
 	return s.repo.List(ctx)
+}
+
+func (s *TestQuestionService) GetByID(ctx context.Context, id int64) (*TestQuestion, error) {
+	if id <= 0 {
+		return nil, ErrTestQuestionNotFound
+	}
+	return s.repo.GetByID(ctx, id)
 }
 
 func (s *TestQuestionService) Create(ctx context.Context, input TestQuestionInput) (*TestQuestion, error) {
@@ -91,6 +101,14 @@ func (s *TestQuestionService) Update(ctx context.Context, id int64, input TestQu
 func (s *TestQuestionService) Delete(ctx context.Context, id int64) error {
 	if id <= 0 {
 		return ErrTestQuestionNotFound
+	}
+	// 先清理该题目的历史结果文件；数据库行由外键级联删除。
+	// 清理失败只记日志，不阻断删除。
+	if s.records != nil {
+		if err := s.records.DeleteQuestionRecords(ctx, id); err != nil {
+			logger.FromContext(ctx).Warn("test_question.record_cleanup_failed",
+				zap.Int64("question_id", id), zap.Error(err))
+		}
 	}
 	return s.repo.Delete(ctx, id)
 }
