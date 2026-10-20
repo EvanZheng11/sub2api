@@ -526,6 +526,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/test-questions',
+    name: 'AdminTestQuestions',
+    component: () => import('@/views/admin/TestQuestionsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Test Question Bank',
+      titleKey: 'admin.testQuestions.title',
+      descriptionKey: 'admin.testQuestions.description'
+    }
+  },
+  {
     path: '/admin/plugins',
     name: 'AdminPlugins',
     component: () => import('@/views/admin/PluginsView.vue'),

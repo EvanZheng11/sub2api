@@ -41,6 +41,43 @@
         </span>
       </div>
 
+      <!-- 题库题目选择：默认题目由后端种子提供 -->
+      <div class="space-y-1.5">
+        <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+          {{ t('admin.accounts.testQuestions.selectLabel') }}
+        </label>
+        <Select
+          v-model="selectedQuestionId"
+          :options="questionOptions"
+          :disabled="loadingQuestions || status === 'connecting'"
+          :placeholder="t('admin.accounts.testQuestions.placeholder')"
+        />
+        <p v-if="loadingQuestions" class="text-xs text-gray-500 dark:text-gray-400">
+          {{ t('common.loading') }}...
+        </p>
+        <p v-else-if="questionsLoadError" class="text-xs text-orange-600 dark:text-orange-400">
+          {{ questionsLoadError }}
+        </p>
+        <p v-else-if="questions.length === 0" class="text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.testQuestions.empty') }}
+        </p>
+        <p v-else-if="questionTypeHint" class="text-xs text-gray-500 dark:text-gray-400">
+          {{ questionTypeHint }}
+        </p>
+        <p
+          v-if="imageQuestionUnsupported"
+          class="text-xs text-red-600 dark:text-red-400"
+        >
+          {{ t('admin.accounts.testQuestions.imageUnsupported') }}
+        </p>
+        <p
+          v-if="fileQuestionModelMismatch"
+          class="text-xs text-red-600 dark:text-red-400"
+        >
+          {{ t('admin.accounts.testQuestions.fileModelMismatch') }}
+        </p>
+      </div>
+
       <!-- Grok: mode first, then optional model / mode params -->
       <div v-if="isGrokAccount" class="space-y-1.5">
         <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -79,6 +116,20 @@
           :options="openAITestModeOptions"
           :disabled="status === 'connecting'"
         />
+      </div>
+
+      <div v-if="showReasoningEffort" class="space-y-1.5">
+        <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+          {{ t('admin.accounts.reasoningEffortLabel') }}
+        </label>
+        <Select
+          v-model="selectedReasoningEffort"
+          :options="reasoningEffortOptions"
+          :disabled="status === 'connecting'"
+        />
+        <p class="text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.reasoningEffortHint') }}
+        </p>
       </div>
 
       <div v-if="supportsPromptInput" class="space-y-1.5">
@@ -280,6 +331,55 @@
         </div>
       </div>
 
+      <!-- 文件题结果：仅展示提取内容，绝不使用 v-html -->
+      <div
+        v-if="artifact"
+        class="space-y-2 rounded-xl border border-gray-200 bg-white p-3 dark:border-dark-500 dark:bg-dark-700"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="min-w-0">
+            <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+              {{ t('admin.accounts.fileArtifact.title') }}
+            </div>
+            <div class="truncate font-mono text-xs text-gray-500 dark:text-gray-400">
+              {{ artifact.fileName }} · {{ artifact.mimeType }}
+            </div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" @click="downloadArtifact">
+            <Icon name="download" size="sm" class="mr-1" />
+            {{ t('admin.accounts.fileArtifact.download') }}
+          </button>
+        </div>
+        <img
+          v-if="artifact.isSvg && artifact.objectUrl"
+          :src="artifact.objectUrl"
+          :alt="artifact.fileName"
+          class="max-h-[360px] w-full rounded-lg border border-gray-200 bg-gray-50 object-contain dark:border-dark-500 dark:bg-dark-800"
+        />
+        <pre
+          v-if="!artifact.isSvg"
+          class="max-h-[300px] overflow-auto rounded-lg bg-gray-900 p-3 font-mono text-xs text-gray-100"
+        >{{ artifact.content }}</pre>
+        <details v-else class="rounded-lg border border-gray-200 dark:border-dark-500">
+          <summary class="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+            {{ t('admin.accounts.fileArtifact.showSource') }}
+          </summary>
+          <pre
+            class="max-h-[300px] overflow-auto border-t border-gray-200 bg-gray-900 p-3 font-mono text-xs text-gray-100 dark:border-dark-500"
+          >{{ artifact.content }}</pre>
+        </details>
+        <p class="text-xs text-gray-500 dark:text-gray-400">
+          {{
+            artifact.isSvg
+              ? t('admin.accounts.fileArtifact.svgPreviewHint')
+              : t('admin.accounts.fileArtifact.sourcePreviewHint')
+          }}
+        </p>
+      </div>
+      <p v-else-if="artifactError" class="text-xs text-orange-600 dark:text-orange-400">
+        {{ artifactError }}
+      </p>
+
       <!-- Image Lightbox -->
       <Teleport to="body">
         <Transition name="fade">
@@ -320,6 +420,14 @@
 
     <template #footer>
       <div class="flex justify-end gap-3">
+        <button
+          v-if="status === 'connecting'"
+          type="button"
+          @click="cancelTest"
+          class="rounded-lg bg-orange-50 px-4 py-2 text-sm font-medium text-orange-700 transition-colors hover:bg-orange-100 dark:bg-orange-900/20 dark:text-orange-300 dark:hover:bg-orange-900/30"
+        >
+          {{ t('admin.accounts.cancelTest') }}
+        </button>
         <button
           @click="handleClose"
           class="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-300 dark:hover:bg-dark-500"
@@ -365,7 +473,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -375,6 +483,8 @@ import { useClipboard } from '@/composables/useClipboard'
 import { buildApiUrl } from '@/api/client'
 import { ADMIN_UI_REQUEST_HEADER } from '@/api/adminUIRequest'
 import { adminAPI } from '@/api/admin'
+import type { TestQuestion } from '@/api/admin/testQuestions'
+import { accountTestReasoningEffortOptions } from './accountTestReasoningEffort'
 import type { Account, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -388,6 +498,14 @@ interface OutputLine {
 interface PreviewMedia {
   url: string
   mimeType?: string
+}
+
+interface TestArtifact {
+  fileName: string
+  mimeType: string
+  content: string
+  isSvg: boolean
+  objectUrl: string
 }
 
 const props = defineProps<{
@@ -407,8 +525,20 @@ const errorMessage = ref('')
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
+const questions = ref<TestQuestion[]>([])
+const loadingQuestions = ref(false)
+const questionsLoadError = ref('')
+const selectedQuestionId = ref('')
+const selectedReasoningEffort = ref('')
+const responseText = ref('')
+const artifact = ref<TestArtifact | null>(null)
+const artifactError = ref('')
 const loadingModels = ref(false)
 let abortController: AbortController | null = null
+let runSequence = 0
+// 每次打开账号测试弹窗递增，用于丢弃上一个账号尚未返回的异步结果。
+let loadSequence = 0
+let skipNextModePromptReset = false
 const generatedImages = ref<PreviewMedia[]>([])
 const generatedAudios = ref<PreviewMedia[]>([])
 const generatedVideos = ref<PreviewMedia[]>([])
@@ -476,6 +606,65 @@ const supportsImageTest = computed(
   () => supportsGeminiImageTest.value || supportsOpenAIImageTest.value || supportsGrokImageTest.value
 )
 
+const isImageGenerationModel = (id: string) => {
+  if (isGrokAccount.value) return isGrokImageModel(id)
+  const modelID = id.toLowerCase()
+  if (props.account?.platform === 'openai') return modelID.startsWith('gpt-image-')
+  if (props.account?.platform === 'gemini' || props.account?.platform === 'antigravity') {
+    return modelID.startsWith('gemini-') && modelID.includes('-image')
+  }
+  return false
+}
+
+const selectedQuestion = computed(
+  () => questions.value.find((question) => String(question.id) === selectedQuestionId.value) ?? null
+)
+const questionOptions = computed(() =>
+  questions.value.map((question) => ({ value: String(question.id), label: question.title }))
+)
+const questionTypeHint = computed(() => {
+  const type = selectedQuestion.value?.type
+  if (!type) return ''
+  return t(`admin.accounts.testQuestions.${type}Hint`)
+})
+const imageQuestionUnsupported = computed(
+  () =>
+    selectedQuestion.value?.type === 'image' &&
+    (!supportsImageTest.value || !isImageGenerationModel(selectedModelId.value))
+)
+const fileQuestionModelMismatch = computed(
+  () => selectedQuestion.value?.type === 'file' && supportsImageTest.value
+)
+const effortMode = computed(() => {
+  if (isOpenAIAccount.value) return testMode.value
+  if (isGrokAccount.value) return grokTestMode.value
+  return 'default'
+})
+const reasoningEffortOptions = computed(() => {
+  const options = accountTestReasoningEffortOptions(
+    props.account,
+    selectedModelId.value,
+    effortMode.value
+  )
+  if (options.length === 0) return []
+  return [
+    { value: '', label: t('admin.accounts.reasoningEffortDefault') },
+    ...options.map((value) => ({ value, label: value }))
+  ]
+})
+const showReasoningEffort = computed(() => reasoningEffortOptions.value.length > 0)
+
+// 模型或测试模式切换后，清空已不再支持的档位，避免把旧 effort 发给上游。
+watch(reasoningEffortOptions, (options) => {
+  if (!selectedReasoningEffort.value) return
+  if (options.some((option) => option.value === selectedReasoningEffort.value)) return
+  console.info(
+    '[账号测试] 当前模型/模式不支持已选 reasoning_effort，已重置',
+    selectedReasoningEffort.value
+  )
+  selectedReasoningEffort.value = ''
+})
+
 // Model select only when the mode needs a model.
 const showModelSelect = computed(() => {
   if (!isGrokAccount.value) return true
@@ -497,15 +686,8 @@ const modelOptionsForMode = computed(() => {
 })
 
 const supportsPromptInput = computed(() => {
-  if (!isGrokAccount.value) {
-    return supportsImageTest.value
-  }
-  return (
-    grokTestMode.value === 'image' ||
-    grokTestMode.value === 'video' ||
-    grokTestMode.value === 'search' ||
-    grokTestMode.value === 'tts'
-  )
+  if (!isGrokAccount.value) return true
+  return grokTestMode.value !== 'stt' && grokTestMode.value !== 'realtime'
 })
 
 const supportsImageUpload = computed(
@@ -609,7 +791,7 @@ const promptInputLabel = computed(() => {
   if (grokTestMode.value === 'tts') {
     return t('admin.accounts.grok.ttsTextLabel')
   }
-  return t('admin.accounts.imagePromptLabel')
+  return t('admin.accounts.testPromptLabel')
 })
 
 const promptInputPlaceholder = computed(() => {
@@ -625,7 +807,7 @@ const promptInputPlaceholder = computed(() => {
   if (grokTestMode.value === 'tts') {
     return t('admin.accounts.grok.ttsTextPlaceholder')
   }
-  return ''
+  return t('admin.accounts.testPromptPlaceholder')
 })
 
 const promptInputHint = computed(() => {
@@ -647,7 +829,7 @@ const promptInputHint = computed(() => {
   if (grokTestMode.value === 'realtime') {
     return t('admin.accounts.grok.realtimeTestHint')
   }
-  return ''
+  return t('admin.accounts.testPromptHint')
 })
 
 const testModeSummary = computed(() => {
@@ -670,11 +852,12 @@ const testModeSummary = computed(() => {
     }
   }
   if (supportsImageTest.value) return t('admin.accounts.imageTestMode')
-  return t('admin.accounts.testPrompt')
+  return t('admin.accounts.textTestMode')
 })
 
 const canStartTest = computed(() => {
   if (status.value === 'connecting') return false
+  if (imageQuestionUnsupported.value || fileQuestionModelMismatch.value) return false
   if (isGrokAccount.value) {
     if (
       grokTestMode.value === 'search' ||
@@ -733,46 +916,128 @@ const pickDefaultModelForMode = () => {
   selectedModelId.value = opts[0].id
 }
 
+const applySelectedQuestion = () => {
+  const question = selectedQuestion.value
+  clearArtifact()
+  artifactError.value = ''
+  if (!question) return
+
+  // 题库题目需要真实生成/提取内容；OpenAI 的 compact 探测会忽略题目，先复位。
+  if (isOpenAIAccount.value && testMode.value !== 'default') {
+    console.info('[账号测试] 已选题库题目，OpenAI 测试模式恢复为 default')
+    testMode.value = 'default'
+  }
+
+  if (question.type === 'image') {
+    if (isGrokAccount.value) {
+      if (grokTestMode.value !== 'image') {
+        skipNextModePromptReset = true
+        grokTestMode.value = 'image'
+      }
+      const imageModel = modelOptionsForMode.value.find((model) => isImageGenerationModel(model.id))
+      if (imageModel && !isImageGenerationModel(selectedModelId.value)) {
+        selectedModelId.value = imageModel.id
+      }
+    } else {
+      const imageModel = availableModels.value.find((model) => isImageGenerationModel(model.id))
+      if (imageModel) selectedModelId.value = imageModel.id
+    }
+  }
+
+  if (question.type !== 'image' && isGrokAccount.value && grokTestMode.value !== 'text') {
+    skipNextModePromptReset = true
+    grokTestMode.value = 'text'
+  }
+
+  if (question.type !== 'image' && supportsImageTest.value) {
+    const textModel = availableModels.value.find((model) => !isImageGenerationModel(model.id))
+    if (textModel) selectedModelId.value = textModel.id
+  }
+
+  testPrompt.value = question.prompt
+}
+
+watch(selectedQuestionId, () => {
+  applySelectedQuestion()
+})
+
 watch(
   () => props.show,
   async (newVal) => {
+    const openId = ++loadSequence
     if (newVal && props.account) {
       testPrompt.value = ''
       testMode.value = 'default'
       grokTestMode.value = 'text'
+      selectedQuestionId.value = ''
+      selectedReasoningEffort.value = ''
       resetState()
-      await loadAvailableModels()
-      if (isGrokAccount.value) {
-        pickDefaultModelForMode()
+      await Promise.all([loadAvailableModels(openId), loadTestQuestions(openId)])
+      if (openId !== loadSequence || !props.show) return
+      if (isGrokAccount.value) pickDefaultModelForMode()
+      if (questions.value.length > 0) {
+        // 题库无默认标记，按 ID 最小（最早种子）作为默认题，避免新建/编辑改变默认项。
+        const defaultQuestion = questions.value.reduce((lowest, question) =>
+          !lowest || question.id < lowest.id ? question : lowest
+        )
+        selectedQuestionId.value = String(defaultQuestion.id)
+      } else {
         applyDefaultPromptForMode()
       }
     } else {
+      runSequence += 1
       abortStream()
+      clearArtifact()
     }
   }
 )
 
 watch(grokTestMode, () => {
   if (!isGrokAccount.value) return
-  testPrompt.value = ''
+  const preservePrompt = skipNextModePromptReset
+  skipNextModePromptReset = false
   clearMediaUploads()
   pickDefaultModelForMode()
-  applyDefaultPromptForMode()
+  if (!preservePrompt) {
+    testPrompt.value = ''
+    applyDefaultPromptForMode()
+  }
 })
 
-const loadAvailableModels = async () => {
+const loadTestQuestions = async (openId = loadSequence) => {
+  loadingQuestions.value = true
+  questionsLoadError.value = ''
+  try {
+    if (!adminAPI.testQuestions) throw new Error('testQuestions API unavailable')
+    const loaded = await adminAPI.testQuestions.list()
+    if (openId !== loadSequence) return
+    questions.value = loaded
+    console.info('[账号测试] 已加载测试题库', questions.value.length, '道题目')
+  } catch (error) {
+    if (openId !== loadSequence) return
+    console.error('[账号测试] 加载测试题库失败', error)
+    questions.value = []
+    questionsLoadError.value = t('admin.accounts.testQuestions.loadFailed')
+  } finally {
+    if (openId === loadSequence) loadingQuestions.value = false
+  }
+}
+
+const loadAvailableModels = async (openId = loadSequence) => {
   if (!props.account) return
 
   loadingModels.value = true
   selectedModelId.value = '' // Reset selection before loading
+  const account = props.account
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
-    availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
+    const models = await adminAPI.accounts.getAvailableModels(account.id)
+    if (openId !== loadSequence) return
+    availableModels.value = account.platform === 'gemini' || account.platform === 'antigravity'
       ? sortTestModels(models)
       : models
     // Default selection by platform
     if (availableModels.value.length > 0) {
-      if (props.account.platform === 'gemini') {
+      if (account.platform === 'gemini') {
         selectedModelId.value = availableModels.value[0].id
       } else {
         // Try to select Sonnet as default, otherwise use first model
@@ -781,30 +1046,215 @@ const loadAvailableModels = async () => {
       }
     }
   } catch (error) {
+    if (openId !== loadSequence) return
     console.error('Failed to load available models:', error)
     // Fallback to empty list
     availableModels.value = []
     selectedModelId.value = ''
   } finally {
-    loadingModels.value = false
+    if (openId === loadSequence) loadingModels.value = false
   }
+}
+
+const artifactMimeTypes: Record<string, string> = {
+  svg: 'image/svg+xml',
+  html: 'text/html',
+  htm: 'text/html',
+  md: 'text/markdown',
+  markdown: 'text/markdown',
+  json: 'application/json',
+  csv: 'text/csv',
+  xml: 'application/xml',
+  css: 'text/css',
+  js: 'text/javascript',
+  javascript: 'text/javascript',
+  ts: 'text/typescript',
+  typescript: 'text/typescript',
+  yaml: 'application/yaml',
+  yml: 'application/yaml',
+  py: 'text/x-python',
+  python: 'text/x-python',
+  go: 'text/x-go',
+  sh: 'text/x-shellscript',
+  bash: 'text/x-shellscript',
+  txt: 'text/plain',
+  text: 'text/plain'
+}
+
+const fenceLanguage = (rawLanguage: string): string =>
+  rawLanguage.trim().toLowerCase().split(/\s+/)[0] || ''
+
+// 从任意文本中提取完整的 <svg>...</svg>，避免把前后说明文字写进 SVG 导致预览损坏。
+const extractSvgRoot = (raw: string): string => {
+  const startMatch = /<svg[\s>]/i.exec(raw)
+  if (!startMatch) return ''
+  const fromStart = raw.slice(startMatch.index)
+  const endMatch = /<\/svg\s*>/i.exec(fromStart)
+  if (!endMatch) return ''
+  return fromStart.slice(0, endMatch.index + endMatch[0].length).trim()
+}
+
+// 去掉前导 XML 声明/注释/doctype（及注释间距），用于判断内容真正的根元素。
+const stripProlog = (content: string): string => {
+  let body = content.trim()
+  for (;;) {
+    const next = body
+      .replace(/^<\?xml[\s\S]*?\?>/i, '')
+      .replace(/^<!--[\s\S]*?-->/i, '')
+      .replace(/^<!doctype[^>]*>/i, '')
+      .trim()
+    if (next === body) return body
+    body = next
+  }
+}
+
+// 根元素是 <svg> 才算 SVG 文档：HTML 文档里内嵌 <svg> 不能被截成 SVG。
+const isSvgRootDocument = (content: string): boolean => /^<svg[\s>/]/i.test(stripProlog(content))
+
+// 根元素是 <html>（doctype 已剥除）判定为 HTML 文档，需要整体保留。
+const isHtmlRootDocument = (content: string): boolean => /^<html[\s>]/i.test(stripProlog(content))
+
+// 只有 svg/xml/空/txt/text 及未知语言才可能是 SVG；明确写了 html/js/json 等已知类型整体保留。
+const isSvgCandidateLanguage = (language: string): boolean =>
+  language === '' || language === 'svg' || language === 'xml' || language === 'txt' || language === 'text' || !artifactMimeTypes[language]
+
+const normalizeArtifactLanguage = (rawLanguage: string, content: string): string => {
+  const language = fenceLanguage(rawLanguage)
+  // 明确标了已知非 svg/xml 语言（html/js/json/md 等）时按语言定类型，不因内容含 <svg> 改判。
+  if (language && !isSvgCandidateLanguage(language)) return language
+  // 明确标 svg，或根文档就是 SVG（```xml 包着 SVG）时按 SVG 预览。
+  if (language === 'svg' || isSvgRootDocument(content)) return 'svg'
+  // html 根文档整体保留，不能因为里面放了 <svg> 就只截出图形。
+  if (isHtmlRootDocument(content)) return 'html'
+  if (language) return language
+  return 'txt'
+}
+
+const buildArtifactFromText = (rawText: string) => {
+  const text = rawText.trim()
+  if (!text) {
+    artifactError.value = t('admin.accounts.fileArtifact.none')
+    return
+  }
+
+  const fences: Array<{ language: string; content: string }> = []
+  const fencePattern = /```([^\n`]*)\r?\n([\s\S]*?)```/g
+  let match: RegExpExecArray | null
+  while ((match = fencePattern.exec(text)) !== null) {
+    fences.push({ language: match[1], content: match[2].trim() })
+  }
+
+  let selected: { language: string; content: string } | null = null
+  // 多代码块时优先 SVG；但明确写了 html/js/json 等语言、或整份 HTML 文档（即便内嵌 <svg>）都不算 SVG 块。
+  const svgFence = fences.find((fence) => {
+    const language = fenceLanguage(fence.language)
+    if (fence.content.length === 0 || !isSvgCandidateLanguage(language)) return false
+    return (
+      language === 'svg' ||
+      isSvgRootDocument(fence.content) ||
+      (extractSvgRoot(fence.content) !== '' && !isHtmlRootDocument(fence.content))
+    )
+  })
+  if (svgFence) {
+    selected = {
+      language: 'svg',
+      content: extractSvgRoot(svgFence.content) || svgFence.content
+    }
+  } else if (fences.length > 0) {
+    selected = fences[0]
+  } else {
+    const svg = isHtmlRootDocument(text) ? '' : extractSvgRoot(text)
+    selected = svg ? { language: 'svg', content: svg } : { language: 'txt', content: text }
+  }
+
+  if (!selected.content) {
+    artifactError.value = t('admin.accounts.fileArtifact.none')
+    return
+  }
+
+  const language = normalizeArtifactLanguage(selected.language, selected.content)
+  // 已知代码/文本类型按原扩展名；未知语言安全回退 txt，不引入二进制类型。
+  const extension = artifactMimeTypes[language] ? language : 'txt'
+  const mimeType = artifactMimeTypes[extension] || 'text/plain'
+  const baseName =
+    (selectedQuestion.value?.title || 'test-result')
+      .trim()
+      .replace(/[\\/:*?"<>|\s]+/g, '-')
+      .slice(0, 80) || 'test-result'
+  const isSvg = extension === 'svg'
+
+  let objectUrl = ''
+  if (isSvg && typeof URL.createObjectURL === 'function') {
+    objectUrl = URL.createObjectURL(new Blob([selected.content], { type: mimeType }))
+  }
+
+  artifact.value = {
+    fileName: `${baseName}.${extension}`,
+    mimeType,
+    content: selected.content,
+    isSvg,
+    objectUrl
+  }
+  artifactError.value = ''
+  console.info('[账号测试] 已从响应中提取文件', artifact.value.fileName)
+}
+
+const clearArtifact = () => {
+  if (artifact.value?.objectUrl && typeof URL.revokeObjectURL === 'function') {
+    URL.revokeObjectURL(artifact.value.objectUrl)
+  }
+  artifact.value = null
+  artifactError.value = ''
+}
+
+const downloadArtifact = () => {
+  const current = artifact.value
+  if (!current) return
+  if (typeof URL.createObjectURL !== 'function') {
+    artifactError.value = t('admin.accounts.fileArtifact.none')
+    return
+  }
+  const url = URL.createObjectURL(new Blob([current.content], { type: current.mimeType }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = current.fileName
+  link.rel = 'noopener'
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 const resetState = () => {
   status.value = 'idle'
   outputLines.value = []
   streamingContent.value = ''
+  responseText.value = ''
   errorMessage.value = ''
   generatedImages.value = []
   generatedAudios.value = []
   generatedVideos.value = []
   previewImageUrl.value = ''
+  clearArtifact()
 }
 
 const handleClose = () => {
+  runSequence += 1
   abortStream()
+  clearArtifact()
   emit('close')
 }
+
+const cancelTest = () => {
+  runSequence += 1
+  abortStream()
+  resetState()
+  addLine(t('admin.accounts.testCancelled'), 'text-yellow-400')
+}
+
+onBeforeUnmount(() => {
+  runSequence += 1
+  abortStream()
+  clearArtifact()
+})
 
 const abortStream = () => {
   if (abortController) {
@@ -828,6 +1278,7 @@ const scrollToBottom = async () => {
 const startTest = async () => {
   if (!props.account || !canStartTest.value) return
 
+  const runId = ++runSequence
   resetState()
   status.value = 'connecting'
   addLine(t('admin.accounts.startingTestForAccount', { name: props.account.name }), 'text-blue-400')
@@ -841,18 +1292,37 @@ const startTest = async () => {
 
   abortStream()
 
-  abortController = new AbortController()
+  const controller = new AbortController()
+  abortController = controller
+
+  // 发送前二次校验：模型/模式切换后旧选项可能已失效，避免上游 400。
+  if (
+    selectedReasoningEffort.value &&
+    !reasoningEffortOptions.value.some(
+      (option) => option.value === selectedReasoningEffort.value
+    )
+  ) {
+    console.warn(
+      '[账号测试] 丢弃当前模型/模式下不支持的 reasoning_effort',
+      selectedReasoningEffort.value
+    )
+    selectedReasoningEffort.value = ''
+  }
 
   try {
     const requestBody: {
       model_id: string
       prompt: string
       mode?: string
+      reasoning_effort?: string
       image_data_url?: string
       audio_data_url?: string
     } = {
       model_id: showModelSelect.value ? selectedModelId.value : '',
       prompt: supportsPromptInput.value ? testPrompt.value.trim() : ''
+    }
+    if (selectedReasoningEffort.value) {
+      requestBody.reasoning_effort = selectedReasoningEffort.value
     }
     if (isOpenAIAccount.value) {
       requestBody.mode = testMode.value
@@ -889,7 +1359,7 @@ const startTest = async () => {
         [ADMIN_UI_REQUEST_HEADER]: '1'
       },
       body: JSON.stringify(requestBody),
-      signal: abortController.signal
+      signal: controller.signal
     })
 
     if (!response.ok) {
@@ -907,6 +1377,7 @@ const startTest = async () => {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      if (runId !== runSequence) return
 
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
@@ -918,6 +1389,7 @@ const startTest = async () => {
           if (jsonStr) {
             try {
               const event = JSON.parse(jsonStr)
+              if (runId !== runSequence) return
               handleEvent(event)
             } catch (e) {
               console.error('Failed to parse SSE event:', e)
@@ -926,7 +1398,15 @@ const startTest = async () => {
         }
       }
     }
+
+    if (runId !== runSequence) return
+    if (status.value === 'connecting') {
+      status.value = 'error'
+      errorMessage.value = t('admin.accounts.streamEnded')
+      addLine(t('admin.accounts.errorPrefix', { message: errorMessage.value }), 'text-red-400')
+    }
   } catch (error: unknown) {
+    if (runId !== runSequence) return
     if (error instanceof DOMException && error.name === 'AbortError') {
       status.value = 'idle'
       return
@@ -982,6 +1462,7 @@ const handleEvent = (event: {
     case 'content':
       if (event.text) {
         streamingContent.value += event.text
+        responseText.value += event.text
         scrollToBottom()
       }
       break
@@ -1030,6 +1511,9 @@ const handleEvent = (event: {
       }
       if (event.success) {
         status.value = 'success'
+        if (selectedQuestion.value?.type === 'file') {
+          buildArtifactFromText(responseText.value)
+        }
       } else {
         status.value = 'error'
         errorMessage.value = event.error || t('admin.accounts.testFailed')

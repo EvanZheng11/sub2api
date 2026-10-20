@@ -1266,6 +1266,9 @@ type TestAccountRequest struct {
 	ModelID string `json:"model_id"`
 	Prompt  string `json:"prompt"`
 	Mode    string `json:"mode"`
+	// 可选推理档位；后端会在写入任何 SSE 前按平台/模型/模式校验，
+	// 不支持或未知的值返回 HTTP 400。
+	ReasoningEffort string `json:"reasoning_effort"`
 	// Optional media for Grok (and future) real generation tests.
 	// ImageDataURL / AudioDataURL are data:<mime>;base64,... payloads.
 	ImageDataURL string `json:"image_data_url"`
@@ -1300,13 +1303,20 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	opts := service.AccountTestOptions{
-		ImageDataURL: req.ImageDataURL,
-		AudioDataURL: req.AudioDataURL,
+		ImageDataURL:    req.ImageDataURL,
+		AudioDataURL:    req.AudioDataURL,
+		ReasoningEffort: req.ReasoningEffort,
 	}
 
 	// Use AccountTestService to test the account with SSE streaming
 	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode, opts); err != nil {
-		// Error already sent via SSE, just log
+		// 参数错误（如未知 reasoning_effort）在写入 SSE 前返回，转成 400 给前端明确提示。
+		var requestErr *service.AccountTestRequestError
+		if errors.As(err, &requestErr) {
+			log.Printf("[account-test] 拒绝测试请求 account=%d: %s", accountID, requestErr.Error())
+			response.BadRequest(c, requestErr.Error())
+		}
+		// 其他错误已经通过 SSE 发送并记录日志，这里只返回。
 		return
 	}
 
