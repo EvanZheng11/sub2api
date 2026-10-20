@@ -99,7 +99,7 @@ func (r *fakeTestQuestionRepo) Delete(ctx context.Context, id int64) error {
 func newTestQuestionTestRouter() (*gin.Engine, *fakeTestQuestionRepo) {
 	gin.SetMode(gin.TestMode)
 	repo := newFakeTestQuestionRepo()
-	h := NewTestQuestionHandler(service.NewTestQuestionService(repo))
+	h := NewTestQuestionHandler(service.NewTestQuestionService(repo, nil))
 	r := gin.New()
 	group := r.Group("/api/v1/admin")
 	group.GET("/test-questions", h.List)
