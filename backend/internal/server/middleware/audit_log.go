@@ -157,6 +157,9 @@ var auditBodyOmittedRoutes = map[string]struct{}{
 	"POST /api/v1/admin/prompt-audit/events/batch-delete":       {},
 	"POST /api/v1/admin/prompt-audit/events/delete-preview":     {},
 	"POST /api/v1/admin/prompt-audit/events/delete-by-filter":   {},
+	// 题库提示词体量大且属于测试内容，不入审计日志正文。
+	"POST /api/v1/admin/test-questions":    {},
+	"PUT /api/v1/admin/test-questions/:id": {},
 }
 
 // NewAuditLogMiddleware 创建审计中间件。

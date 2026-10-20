@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -46,6 +47,11 @@ const (
 	testClaudeAPIURL            = "https://api.anthropic.com/v1/messages?beta=true"
 	chatgptCodexAPIURL          = "https://chatgpt.com/backend-api/codex/responses"
 	defaultAntigravityTestModel = "claude-sonnet-4-6"
+
+	// 空题目的固定探测沿用原预算；自定义题目必须给足输出空间（SVG 等长文本极易被截断）。
+	accountTestProbeMaxTokens        = 1024
+	accountTestBedrockProbeMaxTokens = 256
+	accountTestCustomPromptMaxTokens = 8192
 )
 
 // TestEvent represents a SSE event for account testing
@@ -67,9 +73,11 @@ type TestEvent struct {
 
 // AccountTestOptions carries optional media for admin connectivity tests.
 // ImageDataURL / AudioDataURL are full data URLs (data:<mime>;base64,...).
+// ReasoningEffort 会在写入任何 SSE 前由 resolveAccountTestReasoningEffort 校验。
 type AccountTestOptions struct {
-	ImageDataURL string
-	AudioDataURL string
+	ImageDataURL    string
+	AudioDataURL    string
+	ReasoningEffort string
 }
 
 func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
@@ -312,14 +320,28 @@ func generateSessionString() (string, error) {
 	return FormatMetadataUserID(hex64, "", sessionUUID, uaVersion), nil
 }
 
-// createTestPayload creates a Claude Code style test request payload
-func createTestPayload(modelID string) (map[string]any, error) {
+// accountTestOutputBudget 区分“空题目最小探测”与“真实题目生成”的输出预算：
+// 空 prompt 保留原有 probe 预算，自定义题目（SVG/长文本）需要足够 token 才不会被截断。
+func accountTestOutputBudget(prompt string, probeMaxTokens int) int {
+	if strings.TrimSpace(prompt) == "" {
+		return probeMaxTokens
+	}
+	return accountTestCustomPromptMaxTokens
+}
+
+// createTestPayload 构造 Claude Code 风格的测试请求体。
+// prompt 为空时保留原有 "hi" 探测语义；effort 非空时走 output_config.effort。
+func createTestPayload(modelID string, prompt string, effort string) (map[string]any, error) {
 	sessionID, err := generateSessionString()
 	if err != nil {
 		return nil, err
 	}
 
-	return map[string]any{
+	testPrompt := strings.TrimSpace(prompt)
+	if testPrompt == "" {
+		testPrompt = "hi"
+	}
+	payload := map[string]any{
 		"model": modelID,
 		"messages": []map[string]any{
 			{
@@ -327,7 +349,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 				"content": []map[string]any{
 					{
 						"type": "text",
-						"text": "hi",
+						"text": testPrompt,
 						"cache_control": map[string]string{
 							"type": "ephemeral",
 						},
@@ -347,10 +369,35 @@ func createTestPayload(modelID string) (map[string]any, error) {
 		"metadata": map[string]string{
 			"user_id": sessionID,
 		},
-		"max_tokens":  1024,
+		"max_tokens":  accountTestOutputBudget(prompt, accountTestProbeMaxTokens),
 		"temperature": 1,
 		"stream":      true,
-	}, nil
+	}
+	if effort = strings.TrimSpace(effort); effort != "" {
+		payload["output_config"] = map[string]any{"effort": effort}
+	}
+	return payload, nil
+}
+
+// validateAccountTestCompactMode 在任何 SSE 写入前拒绝无法真实执行的 compact 组合：
+// compact 是独立的原生压缩探测（无题目、无 effort），不能拿它冒充自定义题目或图片测试。
+func validateAccountTestCompactMode(account *Account, modelID, prompt, mode string) error {
+	if normalizeAccountTestMode(mode) != AccountTestModeCompact {
+		return nil
+	}
+	if strings.TrimSpace(prompt) != "" {
+		return &AccountTestRequestError{Message: "compact 探测不执行自定义题目：请清空题目后重试，或改用 default 模式"}
+	}
+	if account != nil && account.IsOpenAI() {
+		testModelID := strings.TrimSpace(modelID)
+		if testModelID == "" {
+			testModelID = openai.DefaultTestModel
+		}
+		if isOpenAIImageModel(account.GetMappedModel(testModelID)) {
+			return &AccountTestRequestError{Message: "图片模型不支持 compact 探测：请改用 default 模式"}
+		}
+	}
+	return nil
 }
 
 // TestAccountConnection tests an account's connection by sending a test request
@@ -369,6 +416,20 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
 	bindAccountTestPlatform(c, account)
+
+	// 在任何 SSE 写入前完成 effort 校验：未知档位/不支持平台返回 400，而不是静默忽略。
+	effort, err := resolveAccountTestReasoningEffort(account, modelID, mode, testOpts.ReasoningEffort)
+	if err != nil {
+		logAccountTestError(c, err.Error())
+		return err
+	}
+	testOpts.ReasoningEffort = effort
+
+	// compact 不兼容组合必须在任何 SSE 写入前拒绝。
+	if err := validateAccountTestCompactMode(account, modelID, prompt, mode); err != nil {
+		logAccountTestError(c, err.Error())
+		return err
+	}
 
 	// Synthetic UI load-test accounts exercise the real SSE parsing and modal
 	// interactions, but intentionally do not send their placeholder credentials
@@ -391,20 +452,20 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		case APIProtocolAdaptive:
 			return s.testCNProviderAdaptiveConnection(c, account, modelID, prompt)
 		case APIProtocolResponses:
-			return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
+			return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode), effort)
 		case APIProtocolChatCompletions:
 			return s.testCNProviderChatCompletionsConnection(c, account, modelID, prompt)
 		case APIProtocolAnthropic:
-			return s.testCNProviderAnthropicConnection(c, account, modelID)
+			return s.testCNProviderAnthropicConnection(c, account, modelID, prompt)
 		}
 	}
 
 	if account.IsOpenAI() {
-		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
+		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode), effort)
 	}
 
 	if account.IsGemini() {
-		return s.testGeminiAccountConnection(c, account, modelID, prompt)
+		return s.testGeminiAccountConnection(c, account, modelID, prompt, effort)
 	}
 
 	if account.Platform == PlatformGrok {
@@ -424,7 +485,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testTypeSafeAccountConnection(c, account, prompt)
 	}
 
-	return s.testClaudeAccountConnection(c, account, modelID)
+	return s.testClaudeAccountConnection(c, account, modelID, prompt, effort)
 }
 
 // testModelRoutedAccountConnection probes the native endpoint for the selected
@@ -454,15 +515,15 @@ func (s *AccountTestService) testModelRoutedAccountConnection(c *gin.Context, ac
 	}
 	switch protocol {
 	case APIProtocolAnthropic:
-		return s.testCNProviderAnthropicConnection(c, account, testModelID)
+		return s.testCNProviderAnthropicConnection(c, account, testModelID, prompt)
 	case APIProtocolResponses:
-		return s.testModelRoutedResponsesConnection(c, account, testModelID)
+		return s.testModelRoutedResponsesConnection(c, account, testModelID, prompt)
 	default:
 		return s.testCNProviderChatCompletionsConnection(c, account, testModelID, prompt)
 	}
 }
 
-func (s *AccountTestService) testModelRoutedResponsesConnection(c *gin.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testModelRoutedResponsesConnection(c *gin.Context, account *Account, testModelID string, prompt string) error {
 	authToken := strings.TrimSpace(account.GetOpenAIProtocolAPIKey())
 	if authToken == "" {
 		return s.sendErrorAndEnd(c, "No API key available")
@@ -473,7 +534,7 @@ func (s *AccountTestService) testModelRoutedResponsesConnection(c *gin.Context, 
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
-	return s.testCNProviderAdaptiveResponsesConnection(c, account, testModelID, authToken)
+	return s.testCNProviderAdaptiveResponsesConnection(c, account, testModelID, authToken, prompt)
 }
 
 func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
@@ -497,11 +558,11 @@ func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Cont
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 	}
 
-	return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
+	return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken, "")
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
-func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account *Account, modelID string) error {
+func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, effort string) error {
 	ctx := c.Request.Context()
 
 	// Determine the model to use
@@ -517,10 +578,10 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	// Bedrock accounts use a separate test path
 	if account.IsBedrock() {
-		return s.testBedrockAccountConnection(c, ctx, account, testModelID)
+		return s.testBedrockAccountConnection(c, ctx, account, testModelID, prompt)
 	}
 	if account.Type == AccountTypeServiceAccount {
-		return s.testClaudeVertexServiceAccountConnection(c, ctx, account, testModelID)
+		return s.testClaudeVertexServiceAccountConnection(c, ctx, account, testModelID, prompt, effort)
 	}
 
 	// Determine authentication method and API URL
@@ -560,7 +621,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	c.Writer.Flush()
 
 	// Create Claude Code style payload (same for all account types)
-	payload, err := createTestPayload(testModelID)
+	payload, err := createTestPayload(testModelID, prompt, effort)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
@@ -583,12 +644,13 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		req.Header.Set(key, value)
 	}
 
-	// Set authentication header
+	// 设置认证头。effort 走 output_config.effort 时需要显式 beta token，
+	// 否则上游可能忽略该档位（与真实网关的 FullClaudeCodeMimicryBetas 对齐）。
 	if account.IsOAuth() {
-		req.Header.Set("anthropic-beta", claude.DefaultBetaHeader)
+		req.Header.Set("anthropic-beta", appendClaudeEffortBeta(claude.DefaultBetaHeader, effort))
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	} else {
-		req.Header.Set("anthropic-beta", claude.APIKeyBetaHeader)
+		req.Header.Set("anthropic-beta", appendClaudeEffortBeta(claude.APIKeyBetaHeader, effort))
 		// Ollama Cloud Anthropic 兼容端点按实际 base_url 强制 Bearer，
 		// 其余保持 extra/default 行为。
 		setAnthropicAPIKeyAuthHeader(req.Header, account, authToken, account.GetBaseURL())
@@ -625,7 +687,23 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	return s.processClaudeStream(c, resp.Body)
 }
 
-func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
+// appendClaudeEffortBeta 在测试请求携带 output_config.effort 时补上 effort beta token。
+func appendClaudeEffortBeta(header string, effort string) string {
+	if strings.TrimSpace(effort) == "" {
+		return header
+	}
+	for _, part := range strings.Split(header, ",") {
+		if strings.TrimSpace(part) == claude.BetaEffort {
+			return header
+		}
+	}
+	if strings.TrimSpace(header) == "" {
+		return claude.BetaEffort
+	}
+	return header + "," + claude.BetaEffort
+}
+
+func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string, prompt string, effort string) error {
 	if mappedModel, matched := account.ResolveMappedModel(testModelID); matched {
 		testModelID = mappedModel
 	} else {
@@ -638,7 +716,7 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payload, err := createTestPayload(testModelID)
+	payload, err := createTestPayload(testModelID, prompt, effort)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
@@ -694,7 +772,7 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 }
 
 // testBedrockAccountConnection tests a Bedrock (SigV4 or API Key) account using non-streaming invoke
-func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string, prompt string) error {
 	region := bedrockRuntimeRegion(account)
 	resolvedModelID, ok := ResolveBedrockModelID(account, testModelID)
 	if !ok {
@@ -710,6 +788,10 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 	c.Writer.Flush()
 
 	// Create a minimal Bedrock-compatible payload (no stream, no cache_control)
+	bedrockPrompt := strings.TrimSpace(prompt)
+	if bedrockPrompt == "" {
+		bedrockPrompt = "hi"
+	}
 	bedrockPayload := map[string]any{
 		"anthropic_version": "bedrock-2023-05-31",
 		"messages": []map[string]any{
@@ -718,12 +800,12 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 				"content": []map[string]any{
 					{
 						"type": "text",
-						"text": "hi",
+						"text": bedrockPrompt,
 					},
 				},
 			},
 		},
-		"max_tokens":  256,
+		"max_tokens":  accountTestOutputBudget(bedrockPrompt, accountTestBedrockProbeMaxTokens),
 		"temperature": 1,
 	}
 	bedrockBody, _ := json.Marshal(bedrockPayload)
@@ -797,7 +879,8 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 }
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
-func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
+func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string, effort ...string) error {
+	resolvedEffort := firstAccountTestEffort(effort)
 	ctx := c.Request.Context()
 	mode = normalizeAccountTestMode(mode)
 
@@ -870,7 +953,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
 		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
-			return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
+			return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken, resolvedEffort)
 		}
 		apiURL = buildOpenAIResponsesURLForPlatform(credentialAccount.Platform, normalizedBaseURL)
 	} else {
@@ -890,7 +973,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if isOAuth {
 		upstreamTestModelID = normalizeOpenAIModelForUpstream(credentialAccount, testModelID)
 	}
-	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth)
+	payload := createOpenAIResponsesTestPayload(upstreamTestModelID, isOAuth, prompt, resolvedEffort)
 	payloadBytes, _ := json.Marshal(payload)
 
 	// Send test_start event once. A task-invalid Agent Identity response may
@@ -973,7 +1056,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 				return s.sendErrorAndEnd(c, fmt.Sprintf("Agent Identity task recovery failed: %s", err.Error()))
 			}
 			c.Request = c.Request.WithContext(markAgentIdentityTaskRecoveryTried(ctx))
-			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
+			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode, resolvedEffort)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
@@ -1041,7 +1124,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 		if mapped := strings.TrimSpace(account.GetMappedModel(testModelID)); mapped != "" {
 			testModelID = mapped
 		}
-		return s.testGrokResponsesConnection(c, ctx, account, authToken, testModelID)
+		return s.testGrokResponsesConnection(c, ctx, account, authToken, testModelID, prompt, opts.ReasoningEffort)
 	}
 
 	// mode == default: infer from model family (legacy UI / API clients).
@@ -1059,7 +1142,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 	case isGrokVideoGenerationModel(testModelID):
 		return s.testGrokVideoGeneration(c, ctx, account, authToken, testModelID, resolveGrokVideoPrompt(prompt), opts)
 	default:
-		return s.testGrokResponsesConnection(c, ctx, account, authToken, testModelID)
+		return s.testGrokResponsesConnection(c, ctx, account, authToken, testModelID, prompt, opts.ReasoningEffort)
 	}
 }
 
@@ -1245,7 +1328,7 @@ func (s *AccountTestService) observeGrokTestResponse(ctx context.Context, accoun
 	}
 }
 
-func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx context.Context, account *Account, authToken, testModelID string) error {
+func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx context.Context, account *Account, authToken, testModelID, prompt, effort string) error {
 	apiURL, err := buildGrokResponsesURL(account, s.cfg, s.settingService)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err.Error()))
@@ -1253,7 +1336,7 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 
 	s.prepareGrokTestSSE(c)
 
-	payloadBytes, err := buildGrokQuotaProbeBody(testModelID)
+	payloadBytes, err := createGrokResponsesTestPayload(testModelID, prompt, effort)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create Grok test payload")
 	}
@@ -2122,6 +2205,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	prompt string,
 	normalizedBaseURL string,
 	authToken string,
+	effort string,
 ) error {
 	ctx := c.Request.Context()
 	apiURL := buildOpenAIChatCompletionsURL(normalizedBaseURL)
@@ -2132,7 +2216,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payload := createOpenAIChatCompletionsTestPayload(testModelID, prompt)
+	payload := createOpenAIChatCompletionsTestPayload(testModelID, prompt, effort)
 	payloadBytes, _ := json.Marshal(payload)
 
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
@@ -2383,7 +2467,8 @@ func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, accoun
 }
 
 // testGeminiAccountConnection tests a Gemini account's connection
-func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, effort ...string) error {
+	resolvedEffort := firstAccountTestEffort(effort)
 	ctx := c.Request.Context()
 
 	// Determine the model to use
@@ -2410,7 +2495,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	c.Writer.Flush()
 
 	// Create test payload (Gemini format)
-	payload := createGeminiTestPayload(testModelID, prompt)
+	payload := createGeminiTestPayload(testModelID, prompt, resolvedEffort)
 
 	// Build request based on account type
 	var req *http.Request
@@ -2460,16 +2545,17 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Account, modelID string, prompt string) error {
 	if account.Type == AccountTypeAPIKey {
 		if strings.HasPrefix(modelID, "gemini-") {
-			return s.testGeminiAccountConnection(c, account, modelID, prompt)
+			return s.testGeminiAccountConnection(c, account, modelID, prompt, "")
 		}
-		return s.testClaudeAccountConnection(c, account, modelID)
+		return s.testClaudeAccountConnection(c, account, modelID, prompt, "")
 	}
-	return s.testAntigravityAccountConnection(c, account, modelID)
+	return s.testAntigravityAccountConnection(c, account, modelID, prompt)
 }
 
 // testAntigravityAccountConnection tests an Antigravity account's connection
-// 支持 Claude 和 Gemini 两种协议，使用非流式请求
-func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, account *Account, modelID string) error {
+// 支持 Claude 和 Gemini 两种协议，使用非流式请求。
+// 空 prompt 走网关原有的固定最小探测；自定义题目走测试专用的请求体覆盖。
+func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
 	ctx := c.Request.Context()
 
 	testModelID := antigravityConnectionTestModel(modelID)
@@ -2488,8 +2574,14 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 	// Send test_start event
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
-	// 调用 AntigravityGatewayService.TestConnection（复用协议转换逻辑）
-	result, err := s.antigravityGatewayService.TestConnection(ctx, account, testModelID)
+	// 空题目复用网关固定探测；自定义题目用真实题目构造测试请求体（不发 effort，避免伪支持）。
+	var result *TestConnectionResult
+	var err error
+	if strings.TrimSpace(prompt) == "" {
+		result, err = s.antigravityGatewayService.TestConnection(ctx, account, testModelID)
+	} else {
+		result, err = s.testAntigravityPromptConnection(ctx, account, testModelID, prompt)
+	}
 	if err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}
@@ -2501,6 +2593,91 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
+}
+
+// testAntigravityPromptConnection 用真实题目执行 Antigravity OAuth/Upstream 测试。
+// 网关公共 TestConnection 保持 "." + maxOutputTokens=1 的固定探测；这里只覆盖测试路径的
+// 请求体，鉴权、模型映射、重试与 URL 选择仍复用网关逻辑。
+func (s *AccountTestService) testAntigravityPromptConnection(ctx context.Context, account *Account, modelID, prompt string) (*TestConnectionResult, error) {
+	gw := s.antigravityGatewayService
+	if gw == nil || gw.tokenProvider == nil {
+		return nil, errors.New("antigravity token provider not configured")
+	}
+	accessToken, err := gw.tokenProvider.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("获取 access_token 失败: %w", err)
+	}
+	projectID, err := resolveAntigravityProjectID(account)
+	if err != nil {
+		return nil, err
+	}
+	mappedModel := gw.getMappedModel(account, modelID)
+	if mappedModel == "" {
+		return nil, fmt.Errorf("model %s not in whitelist", modelID)
+	}
+	requestBody, err := s.buildAntigravityPromptTestRequest(ctx, projectID, mappedModel, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	prefix := fmt.Sprintf("[antigravity-Test] account=%d(%s)", account.ID, account.Name)
+	result, err := gw.antigravityRetryLoop(antigravityRetryLoopParams{
+		ctx:            ctx,
+		prefix:         prefix,
+		account:        account,
+		proxyURL:       proxyURL,
+		accessToken:    accessToken,
+		action:         "streamGenerateContent",
+		body:           requestBody,
+		c:              nil, // 无 gin.Context → 跳过 ops 追踪
+		httpUpstream:   gw.httpUpstream,
+		settingService: gw.settingService,
+		accountRepo:    gw.accountRepo,
+		handleError:    testConnectionHandleError,
+		requestedModel: modelID,
+	})
+	if err != nil {
+		var switchErr *AntigravityAccountSwitchError
+		if errors.As(err, &switchErr) {
+			return nil, fmt.Errorf("该账号模型 %s 当前限流中，请稍后重试", switchErr.RateLimitedModel)
+		}
+		return nil, err
+	}
+	if result == nil || result.resp == nil {
+		return nil, errors.New("upstream returned empty response")
+	}
+	defer func() { _ = result.resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(result.resp.Body, gw.upstreamErrorBodyReadLimit()))
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+	if result.resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API 返回 %d: %s", result.resp.StatusCode, string(respBody))
+	}
+	return &TestConnectionResult{Text: extractTextFromSSEResponse(respBody), MappedModel: mappedModel}, nil
+}
+
+// buildAntigravityPromptTestRequest 把真实题目转成 Antigravity v1internal 请求体。
+// 输出预算用自定义题目常量，由 antigravity 转换器按模型上限收敛。
+func (s *AccountTestService) buildAntigravityPromptTestRequest(ctx context.Context, projectID, mappedModel, prompt string) ([]byte, error) {
+	content, err := json.Marshal(strings.TrimSpace(prompt))
+	if err != nil {
+		return nil, err
+	}
+	opts := s.antigravityGatewayService.getClaudeTransformOptions(ctx)
+	opts.EnableIdentityPatch = true // Antigravity 上游要求必须包含身份提示词
+	return antigravity.TransformClaudeToGeminiWithOptions(&antigravity.ClaudeRequest{
+		Model:     mappedModel,
+		Messages:  []antigravity.ClaudeMessage{{Role: "user", Content: content}},
+		MaxTokens: accountTestCustomPromptMaxTokens,
+		Stream:    false,
+	}, projectID, mappedModel, opts)
 }
 
 func antigravityConnectionTestModel(modelID string) string {
@@ -2634,7 +2811,8 @@ func (s *AccountTestService) buildCodeAssistRequest(ctx context.Context, accessT
 
 // createGeminiTestPayload creates a minimal test payload for Gemini API.
 // Image models use the image-generation path so the frontend can preview the returned image.
-func createGeminiTestPayload(modelID string, prompt string) []byte {
+func createGeminiTestPayload(modelID string, prompt string, effort ...string) []byte {
+	resolvedEffort := firstAccountTestEffort(effort)
 	if isImageGenerationModel(modelID) {
 		imagePrompt := strings.TrimSpace(prompt)
 		if imagePrompt == "" {
@@ -2680,6 +2858,11 @@ func createGeminiTestPayload(modelID string, prompt string) []byte {
 				{"text": "You are a helpful AI assistant."},
 			},
 		},
+	}
+	if resolvedEffort != "" {
+		payload["generationConfig"] = map[string]any{
+			"thinkingConfig": map[string]any{"thinkingLevel": resolvedEffort},
+		}
 	}
 	bytes, _ := json.Marshal(payload)
 	return bytes
@@ -2766,8 +2949,18 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 	}
 }
 
-// createOpenAITestPayload creates a test payload for OpenAI Responses API
+// createOpenAITestPayload 保留给账号用量探测等旧调用方，不携带自定义 prompt/effort。
 func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
+	return createOpenAIResponsesTestPayload(modelID, isOAuth, "", "")
+}
+
+// createOpenAIResponsesTestPayload 构造 OpenAI Responses API 测试请求体。
+// prompt 为空时保留原有 "hi" 探测语义；effort 非空时写入 reasoning.effort。
+func createOpenAIResponsesTestPayload(modelID string, isOAuth bool, prompt string, effort string) map[string]any {
+	testPrompt := strings.TrimSpace(prompt)
+	if testPrompt == "" {
+		testPrompt = "hi"
+	}
 	payload := map[string]any{
 		"model": modelID,
 		"input": []map[string]any{
@@ -2776,7 +2969,7 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
 				"content": []map[string]any{
 					{
 						"type": "input_text",
-						"text": "hi",
+						"text": testPrompt,
 					},
 				},
 			},
@@ -2792,16 +2985,19 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
 	// All accounts require instructions for Responses API
 	payload["instructions"] = openai.DefaultInstructions
 
+	if effort = strings.TrimSpace(effort); effort != "" {
+		payload["reasoning"] = map[string]any{"effort": effort}
+	}
 	return payload
 }
 
-func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[string]any {
+func createOpenAIChatCompletionsTestPayload(modelID string, prompt string, effort string) map[string]any {
 	testPrompt := strings.TrimSpace(prompt)
 	if testPrompt == "" {
 		testPrompt = "hi"
 	}
 
-	return map[string]any{
+	payload := map[string]any{
 		"model": modelID,
 		"messages": []map[string]any{
 			{
@@ -2811,6 +3007,28 @@ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[s
 		},
 		"stream": true,
 	}
+	if effort = strings.TrimSpace(effort); effort != "" {
+		payload["reasoning_effort"] = effort
+	}
+	return payload
+}
+
+// createGrokResponsesTestPayload 用管理端题目和显式 reasoning effort 构造 xAI Responses 探测请求。
+// 只有通过档位校验的模型才会走到这里。
+func createGrokResponsesTestPayload(model string, prompt string, effort string) ([]byte, error) {
+	testPrompt := strings.TrimSpace(prompt)
+	if testPrompt == "" {
+		testPrompt = grokQuotaProbeInput
+	}
+	payload := map[string]any{
+		"model":  model,
+		"input":  testPrompt,
+		"stream": true,
+	}
+	if effort = strings.TrimSpace(effort); effort != "" {
+		payload["reasoning"] = map[string]any{"effort": effort}
+	}
+	return json.Marshal(payload)
 }
 
 // processClaudeStream processes the SSE stream from Claude API
