@@ -95,6 +95,20 @@ func RegisterUserRoutes(
 			channels.GET("/available", h.AvailableChannel.List)
 		}
 
+		// 测试题库（普通用户）：可查看与新建题目、发起测试、查看测试历史，
+		// 但不提供修改/删除题目接口，账号范围限制在用户可用分组内。
+		testCenter := authenticated.Group("/test-center")
+		{
+			testCenter.GET("/questions", h.TestCenter.ListQuestions)
+			testCenter.POST("/questions", h.TestCenter.CreateQuestion)
+			testCenter.GET("/questions/:id/records", h.TestCenter.ListQuestionRecords)
+			testCenter.GET("/records/:id", h.TestCenter.GetRecord)
+			testCenter.GET("/records/:id/files/:file_id", h.TestCenter.GetRecordFile)
+			testCenter.GET("/accounts", h.TestCenter.ListAccounts)
+			testCenter.GET("/accounts/:id/models", h.TestCenter.GetAccountModels)
+			testCenter.POST("/accounts/:id/test", h.TestCenter.TestAccount)
+		}
+
 		// 使用记录（聚合统计属重查询，叠加更严格的按用户限流）
 		usage := authenticated.Group("/usage")
 		usage.Use(panelRateLimiter.Heavy())

@@ -538,6 +538,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    // 普通用户也能进入题库：只读 + 新建 + 发起测试，不能修改/删除题目。
+    path: '/test-questions',
+    name: 'TestQuestions',
+    component: () => import('@/views/admin/TestQuestionsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Test Question Bank',
+      titleKey: 'admin.testQuestions.title',
+      descriptionKey: 'admin.testQuestions.description'
+    }
+  },
+  {
     path: '/admin/plugins',
     name: 'AdminPlugins',
     component: () => import('@/views/admin/PluginsView.vue'),

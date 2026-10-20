@@ -29,6 +29,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -1333,11 +1334,19 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		return
 	}
 
-	if h.rateLimitService != nil {
+	// 恢复运行时状态属于管理动作：普通用户通过测试中心发起的测试不触发，
+	// 避免反复测试把账号的限流/过载状态清掉。
+	if h.rateLimitService != nil && isAdminTestRequest(c) {
 		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
 			_ = c.Error(err)
 		}
 	}
+}
+
+// isAdminTestRequest 判断当前测试请求来自管理员（管理端路由会写入 admin 角色）。
+func isAdminTestRequest(c *gin.Context) bool {
+	role, ok := middleware.GetUserRoleFromContext(c)
+	return ok && role == service.RoleAdmin
 }
 
 // RecoverState handles unified recovery of recoverable account runtime state.

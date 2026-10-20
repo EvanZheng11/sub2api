@@ -45,6 +45,16 @@ export default {
       prompt: '提示词',
       promptPlaceholder: '填写发送给模型的完整提示词'
     },
+    test: {
+      action: '测试',
+      title: '测试题目',
+      account: '测试账号',
+      accountPlaceholder: '选择要测试的账号',
+      accountLoadFailed: '加载可用账号失败',
+      noAccount: '当前没有可用于测试的账号，请联系管理员分配分组。',
+      modelLoadFailed: '加载账号可用模型失败',
+      starting: '开始测试账号：{account}'
+    },
     history: {
       action: '测试历史',
       title: '测试历史',

@@ -254,6 +254,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Column } from '@/components/common/types'
 import { testRecordsAPI, type TestRecord, type TestRecordFile } from '@/api/admin/testRecords'
+import { testCenterAPI } from '@/api/testCenter'
 import type { TestQuestion } from '@/api/admin/testQuestions'
 import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
@@ -281,6 +282,8 @@ interface DetailImage {
 const props = defineProps<{
   show: boolean
   question: TestQuestion | null
+  // userMode=true 时走普通用户测试中心接口（管理员不受影响）
+  userMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -376,7 +379,9 @@ async function loadRecords() {
   loading.value = true
   loadError.value = ''
   try {
-    const result = await testRecordsAPI.listByQuestion(questionID.value, page.value, pageSize.value)
+    const result = props.userMode
+      ? await testCenterAPI.listRecords(questionID.value, page.value, pageSize.value)
+      : await testRecordsAPI.listByQuestion(questionID.value, page.value, pageSize.value)
     records.value = result.items ?? []
     total.value = result.total ?? 0
   } catch (error) {
@@ -436,7 +441,9 @@ async function openDetail(row: TestRecord, mode: DetailMode) {
   detailVisible.value = true
   detailLoading.value = true
   try {
-    const record = await testRecordsAPI.get(row.id)
+    const record = props.userMode
+      ? await testCenterAPI.getRecord(row.id)
+      : await testRecordsAPI.get(row.id)
     // 请求返回时详情可能已关闭或已切到别的记录：直接丢弃，避免覆盖新详情并泄漏本次 URL
     if (isStaleDetail(sequence)) {
       console.log('[测试历史] 详情请求已过期，丢弃返回结果', row.id)
@@ -470,7 +477,9 @@ async function loadDetailImages(record: TestRecord, sequence: number) {
   for (const file of files) {
     let blob: Blob
     try {
-      blob = await testRecordsAPI.fetchFile(record.id, file.id)
+      blob = props.userMode
+        ? await testCenterAPI.fetchRecordFile(record.id, file.id)
+        : await testRecordsAPI.fetchFile(record.id, file.id)
     } catch (error) {
       console.error('[测试历史] 加载结果图片失败', error)
       // 过期时把本次已创建的图片 URL 一并释放，再放弃
@@ -500,7 +509,9 @@ async function downloadFromRecord(row: TestRecord) {
   try {
     const record = detailRecord.value?.id === row.id
       ? detailRecord.value
-      : await testRecordsAPI.get(row.id)
+      : props.userMode
+        ? await testCenterAPI.getRecord(row.id)
+        : await testRecordsAPI.get(row.id)
     const artifact = buildTestArtifact(
       record.response_text ?? '',
       record.question_title || props.question?.title || 'test-result'
@@ -521,7 +532,9 @@ async function downloadDetailMedia(file: TestRecordFile) {
   const record = detailRecord.value
   if (!record) return
   try {
-    const blob = await testRecordsAPI.fetchFile(record.id, file.id)
+    const blob = props.userMode
+      ? await testCenterAPI.fetchRecordFile(record.id, file.id)
+      : await testRecordsAPI.fetchFile(record.id, file.id)
     if (typeof URL.createObjectURL !== 'function') return
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
