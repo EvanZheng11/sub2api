@@ -485,6 +485,12 @@ import { ADMIN_UI_REQUEST_HEADER } from '@/api/adminUIRequest'
 import { adminAPI } from '@/api/admin'
 import type { TestQuestion } from '@/api/admin/testQuestions'
 import { accountTestReasoningEffortOptions } from './accountTestReasoningEffort'
+import {
+  buildTestArtifact,
+  downloadTestArtifact,
+  revokeTestArtifact,
+  type TestArtifact
+} from '@/utils/testArtifact'
 import type { Account, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -498,14 +504,6 @@ interface OutputLine {
 interface PreviewMedia {
   url: string
   mimeType?: string
-}
-
-interface TestArtifact {
-  fileName: string
-  mimeType: string
-  content: string
-  isSvg: boolean
-  objectUrl: string
 }
 
 const props = defineProps<{
@@ -1056,153 +1054,19 @@ const loadAvailableModels = async (openId = loadSequence) => {
   }
 }
 
-const artifactMimeTypes: Record<string, string> = {
-  svg: 'image/svg+xml',
-  html: 'text/html',
-  htm: 'text/html',
-  md: 'text/markdown',
-  markdown: 'text/markdown',
-  json: 'application/json',
-  csv: 'text/csv',
-  xml: 'application/xml',
-  css: 'text/css',
-  js: 'text/javascript',
-  javascript: 'text/javascript',
-  ts: 'text/typescript',
-  typescript: 'text/typescript',
-  yaml: 'application/yaml',
-  yml: 'application/yaml',
-  py: 'text/x-python',
-  python: 'text/x-python',
-  go: 'text/x-go',
-  sh: 'text/x-shellscript',
-  bash: 'text/x-shellscript',
-  txt: 'text/plain',
-  text: 'text/plain'
-}
-
-const fenceLanguage = (rawLanguage: string): string =>
-  rawLanguage.trim().toLowerCase().split(/\s+/)[0] || ''
-
-// 从任意文本中提取完整的 <svg>...</svg>，避免把前后说明文字写进 SVG 导致预览损坏。
-const extractSvgRoot = (raw: string): string => {
-  const startMatch = /<svg[\s>]/i.exec(raw)
-  if (!startMatch) return ''
-  const fromStart = raw.slice(startMatch.index)
-  const endMatch = /<\/svg\s*>/i.exec(fromStart)
-  if (!endMatch) return ''
-  return fromStart.slice(0, endMatch.index + endMatch[0].length).trim()
-}
-
-// 去掉前导 XML 声明/注释/doctype（及注释间距），用于判断内容真正的根元素。
-const stripProlog = (content: string): string => {
-  let body = content.trim()
-  for (;;) {
-    const next = body
-      .replace(/^<\?xml[\s\S]*?\?>/i, '')
-      .replace(/^<!--[\s\S]*?-->/i, '')
-      .replace(/^<!doctype[^>]*>/i, '')
-      .trim()
-    if (next === body) return body
-    body = next
-  }
-}
-
-// 根元素是 <svg> 才算 SVG 文档：HTML 文档里内嵌 <svg> 不能被截成 SVG。
-const isSvgRootDocument = (content: string): boolean => /^<svg[\s>/]/i.test(stripProlog(content))
-
-// 根元素是 <html>（doctype 已剥除）判定为 HTML 文档，需要整体保留。
-const isHtmlRootDocument = (content: string): boolean => /^<html[\s>]/i.test(stripProlog(content))
-
-// 只有 svg/xml/空/txt/text 及未知语言才可能是 SVG；明确写了 html/js/json 等已知类型整体保留。
-const isSvgCandidateLanguage = (language: string): boolean =>
-  language === '' || language === 'svg' || language === 'xml' || language === 'txt' || language === 'text' || !artifactMimeTypes[language]
-
-const normalizeArtifactLanguage = (rawLanguage: string, content: string): string => {
-  const language = fenceLanguage(rawLanguage)
-  // 明确标了已知非 svg/xml 语言（html/js/json/md 等）时按语言定类型，不因内容含 <svg> 改判。
-  if (language && !isSvgCandidateLanguage(language)) return language
-  // 明确标 svg，或根文档就是 SVG（```xml 包着 SVG）时按 SVG 预览。
-  if (language === 'svg' || isSvgRootDocument(content)) return 'svg'
-  // html 根文档整体保留，不能因为里面放了 <svg> 就只截出图形。
-  if (isHtmlRootDocument(content)) return 'html'
-  if (language) return language
-  return 'txt'
-}
-
 const buildArtifactFromText = (rawText: string) => {
-  const text = rawText.trim()
-  if (!text) {
+  const built = buildTestArtifact(rawText, selectedQuestion.value?.title || 'test-result')
+  if (!built) {
     artifactError.value = t('admin.accounts.fileArtifact.none')
     return
   }
-
-  const fences: Array<{ language: string; content: string }> = []
-  const fencePattern = /```([^\n`]*)\r?\n([\s\S]*?)```/g
-  let match: RegExpExecArray | null
-  while ((match = fencePattern.exec(text)) !== null) {
-    fences.push({ language: match[1], content: match[2].trim() })
-  }
-
-  let selected: { language: string; content: string } | null = null
-  // 多代码块时优先 SVG；但明确写了 html/js/json 等语言、或整份 HTML 文档（即便内嵌 <svg>）都不算 SVG 块。
-  const svgFence = fences.find((fence) => {
-    const language = fenceLanguage(fence.language)
-    if (fence.content.length === 0 || !isSvgCandidateLanguage(language)) return false
-    return (
-      language === 'svg' ||
-      isSvgRootDocument(fence.content) ||
-      (extractSvgRoot(fence.content) !== '' && !isHtmlRootDocument(fence.content))
-    )
-  })
-  if (svgFence) {
-    selected = {
-      language: 'svg',
-      content: extractSvgRoot(svgFence.content) || svgFence.content
-    }
-  } else if (fences.length > 0) {
-    selected = fences[0]
-  } else {
-    const svg = isHtmlRootDocument(text) ? '' : extractSvgRoot(text)
-    selected = svg ? { language: 'svg', content: svg } : { language: 'txt', content: text }
-  }
-
-  if (!selected.content) {
-    artifactError.value = t('admin.accounts.fileArtifact.none')
-    return
-  }
-
-  const language = normalizeArtifactLanguage(selected.language, selected.content)
-  // 已知代码/文本类型按原扩展名；未知语言安全回退 txt，不引入二进制类型。
-  const extension = artifactMimeTypes[language] ? language : 'txt'
-  const mimeType = artifactMimeTypes[extension] || 'text/plain'
-  const baseName =
-    (selectedQuestion.value?.title || 'test-result')
-      .trim()
-      .replace(/[\\/:*?"<>|\s]+/g, '-')
-      .slice(0, 80) || 'test-result'
-  const isSvg = extension === 'svg'
-
-  let objectUrl = ''
-  if (isSvg && typeof URL.createObjectURL === 'function') {
-    objectUrl = URL.createObjectURL(new Blob([selected.content], { type: mimeType }))
-  }
-
-  artifact.value = {
-    fileName: `${baseName}.${extension}`,
-    mimeType,
-    content: selected.content,
-    isSvg,
-    objectUrl
-  }
+  artifact.value = built
   artifactError.value = ''
-  console.info('[账号测试] 已从响应中提取文件', artifact.value.fileName)
+  console.info('[账号测试] 已从响应中提取文件', built.fileName)
 }
 
 const clearArtifact = () => {
-  if (artifact.value?.objectUrl && typeof URL.revokeObjectURL === 'function') {
-    URL.revokeObjectURL(artifact.value.objectUrl)
-  }
+  revokeTestArtifact(artifact.value)
   artifact.value = null
   artifactError.value = ''
 }
@@ -1214,13 +1078,7 @@ const downloadArtifact = () => {
     artifactError.value = t('admin.accounts.fileArtifact.none')
     return
   }
-  const url = URL.createObjectURL(new Blob([current.content], { type: current.mimeType }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = current.fileName
-  link.rel = 'noopener'
-  link.click()
-  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  downloadTestArtifact(current)
 }
 
 const resetState = () => {
