@@ -1831,6 +1831,11 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == "" {
 		return true
 	}
+	if a.supportsAnthropicOpenAITextBridge() {
+		// 普通 Responses 文本请求由 Chat 能力承接；不能声称具备原生
+		// Responses 生图/compact、嵌入、实时语音或 Grok 媒体端点。
+		return capability == OpenAIEndpointCapabilityChatCompletions
+	}
 	if !a.IsOpenAICompatible() {
 		return false
 	}

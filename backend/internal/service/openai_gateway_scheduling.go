@@ -401,7 +401,7 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "account_model_not_owned"
 		}
 	}
-	if !BindingCapabilityAllows(platform, account) || !account.IsOpenAICompatible() {
+	if !BindingCapabilityAllows(platform, account) || (!account.IsOpenAICompatible() && !account.supportsAnthropicOpenAITextBridge()) {
 		return "platform_mismatch"
 	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
@@ -440,7 +440,7 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "quota_auto_pause"
 		}
 	}
-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+	if requestedModel != "" && !supportsOpenAIRequestModel(account, platform, requestedModel) {
 		return "model_not_supported"
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
@@ -1512,7 +1512,11 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	}
 	var accounts []Account
 	var err error
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+	if platform == PlatformOpenAI && groupID != nil && (s.cfg == nil || s.cfg.RunMode != config.RunModeSimple) {
+		// 快照不可用时仍按绑定关系取候选，再用同一能力矩阵过滤。
+		accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
+		accounts = filterAccountsByBindingCapability(accounts, platform)
+	} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
 	} else if groupID != nil {
 		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)

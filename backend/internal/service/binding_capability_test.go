@@ -28,7 +28,7 @@ func TestSupportsBindingMatrix(t *testing.T) {
 		{"grok 到 opencode 不支持", PlatformGrok, PlatformOpenCodeGo, APIProtocolAdaptive, false},
 		{"anthropic 到 opencode 不支持", PlatformAnthropic, PlatformOpenCodeGo, APIProtocolAdaptive, false},
 		{"gemini 到 opencode 不支持", PlatformGemini, PlatformOpenCodeGo, APIProtocolAdaptive, false},
-		{"openai 到 anthropic 不支持", PlatformOpenAI, PlatformAnthropic, "", false},
+		{"openai 到 anthropic 文本适配", PlatformOpenAI, PlatformAnthropic, "", true},
 		{"anthropic 到 openai 不支持", PlatformAnthropic, PlatformOpenAI, "", false},
 		{"openai 到 kimi 不支持", PlatformOpenAI, PlatformKimi, "", false},
 		{"kimi 到 openai 不支持", PlatformKimi, PlatformOpenAI, "", false},

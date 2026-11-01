@@ -278,10 +278,19 @@ func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 	models := make([]string, 0)
 	for i := range accounts {
 		account := &accounts[i]
-		if account.Platform != PlatformOpenAI {
+		if account.Platform != PlatformOpenAI && !account.supportsAnthropicOpenAITextBridge() {
 			continue
 		}
-		for modelID := range account.GetModelMapping() {
+		mapping := account.GetModelMapping()
+		if account.supportsAnthropicOpenAITextBridge() && len(mapping) == 0 {
+			for _, model := range claude.DefaultModels {
+				if _, exists := seen[model.ID]; !exists {
+					seen[model.ID] = struct{}{}
+					models = append(models, model.ID)
+				}
+			}
+		}
+		for modelID := range mapping {
 			modelID = strings.TrimSpace(modelID)
 			if modelID == "" || strings.Contains(modelID, "*") {
 				continue

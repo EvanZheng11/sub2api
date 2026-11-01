@@ -21,6 +21,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -1426,7 +1427,8 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	if platform != "" {
 		filtered := make([]Account, 0)
 		for _, acc := range accounts {
-			if acc.Platform == platform || mixedListingAccountAllowed(platform, &acc) {
+			if acc.Platform == platform || mixedListingAccountAllowed(platform, &acc) ||
+				(platform == PlatformOpenAI && BindingCapabilityAllows(platform, &acc)) {
 				filtered = append(filtered, acc)
 			}
 		}
@@ -1448,11 +1450,18 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		}
 
 		mapping := acc.GetModelMapping()
+		if platform == PlatformOpenAI && acc.supportsAnthropicOpenAITextBridge() && len(mapping) == 0 {
+			for _, model := range claude.DefaultModels {
+				modelSet[model.ID] = struct{}{}
+			}
+			hasAnyMapping = true
+		}
 		for model := range mapping {
 			// Accounts pulled in through mixed scheduling only contribute the
 			// models that belong to the listing platform (e.g. an antigravity
 			// account's claude-* mappings must not surface on a gemini group).
-			if platform != "" && acc.Platform != platform && !mixedListingModelAllowed(platform, model) {
+			if platform != "" && acc.Platform != platform && !mixedListingModelAllowed(platform, model) &&
+				!(platform == PlatformOpenAI && BindingCapabilityAllows(platform, &acc)) {
 				continue
 			}
 			modelSet[model] = struct{}{}

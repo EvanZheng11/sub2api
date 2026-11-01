@@ -43,6 +43,10 @@ func SupportsBinding(inboundPlatform, accountPlatform, apiProtocol string) bool 
 		// 由 forwardGrokResponses / Chat Completions 转发链按账号平台分流，
 		// 账号通过 account_groups 绑定关系承接 openai 分组请求。
 		return true
+	case inbound == PlatformOpenAI && account == PlatformAnthropic:
+		// 复用 Anthropic 网关已有的 Responses / Chat Completions 双向适配。
+		// 凭据类型资格在 bindingCapabilityAllows 中进一步检查。
+		return true
 	default:
 		return false
 	}
@@ -59,6 +63,9 @@ func bindingCapabilityAllows(platform string, acc *Account) bool {
 	groupPlatform := normalizePlatformToken(platform)
 	accountPlatform := normalizePlatformToken(acc.Platform)
 	if !SupportsBinding(groupPlatform, accountPlatform, acc.GetAPIProtocol()) {
+		return false
+	}
+	if groupPlatform == PlatformOpenAI && accountPlatform == PlatformAnthropic && !acc.supportsAnthropicOpenAITextBridge() {
 		return false
 	}
 	if groupPlatform == PlatformGemini &&
