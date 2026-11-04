@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/tidwall/gjson"
@@ -84,6 +85,67 @@ func addMessageCacheBreakpoints(body []byte) []byte {
 		}
 	}
 
+	return body
+}
+
+// ensureOpenAIAnthropicMessageCacheBreakpoints 仅为 OpenAI 转 Claude 的请求补齐
+// 会话缓存。保留已有断点与 TTL，不依赖原生 Anthropic 请求的全局改写开关。
+func ensureOpenAIAnthropicMessageCacheBreakpoints(body []byte, model string) []byte {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-") ||
+		gjson.GetBytes(body, "cache_control").Exists() {
+		return body
+	}
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body)
+	if len(messagePaths) > 0 {
+		return body
+	}
+	remaining := maxCacheControlBlocks - len(toolPaths) - len(systemPaths)
+	messages := gjson.GetBytes(body, "messages").Array()
+	anchors, userCount := 0, 0
+	for i := len(messages) - 1; i >= 0 && remaining > 0 && anchors < 2; i-- {
+		message := messages[i]
+		isUser := message.Get("role").String() == "user"
+		if isUser {
+			userCount++
+		}
+		// 与现有策略一致：最近的可缓存消息，以及倒数第二个 user turn。
+		if anchors > 0 && (len(messages) < 4 || !isUser || userCount != 2) {
+			continue
+		}
+		content := message.Get("content")
+		if content.Type == gjson.String {
+			if strings.TrimSpace(content.String()) != "" {
+				body = injectCacheControlOnLastContentBlock(body, i, &message)
+				anchors++
+				remaining--
+			}
+			continue
+		}
+		blocks := content.Array()
+		for j := len(blocks) - 1; j >= 0; j-- {
+			block := blocks[j]
+			switch block.Get("type").String() {
+			case "text":
+				if strings.TrimSpace(block.Get("text").String()) == "" {
+					continue
+				}
+			case "image", "document", "tool_use", "tool_result":
+			default:
+				// thinking、redacted_thinking 等不能直接作为缓存断点。
+				continue
+			}
+			path := fmt.Sprintf("messages.%d.content.%d.cache_control", i, j)
+			out, err := sjson.SetBytes(body, path, anthropicCacheControlPayload{
+				Type: "ephemeral", TTL: claude.DefaultCacheControlTTL,
+			})
+			if err == nil {
+				body = out
+				anchors++
+				remaining--
+			}
+			break
+		}
+	}
 	return body
 }
 

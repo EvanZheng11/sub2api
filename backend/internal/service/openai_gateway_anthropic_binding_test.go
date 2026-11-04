@@ -131,6 +131,12 @@ func TestOpenAIAnthropicBridgeForward(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, "claude-sonnet-5-5", gjson.GetBytes(sent, "model").String())
 					require.True(t, gjson.GetBytes(sent, "stream").Bool())
+					_, messageCachePaths, toolCachePaths, systemCachePaths := collectCacheControlPaths(sent)
+					require.NotEmpty(t, messageCachePaths, "OpenAI 兼容请求必须缓存会话历史，而非只有固定前缀")
+					require.LessOrEqual(t, len(messageCachePaths)+len(toolCachePaths)+len(systemCachePaths), maxCacheControlBlocks)
+					for _, path := range messageCachePaths {
+						require.Equal(t, "5m", gjson.GetBytes(sent, path+".ttl").String())
+					}
 					require.Equal(t, "/v1/messages", result.UpstreamEndpoint)
 					require.Equal(t, "claude-sonnet-5-5", result.Model)
 					require.Contains(t, rec.Body.String(), "first")

@@ -108,6 +108,9 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		anthropicBody = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
 	}
 
+	// 为 OpenAI 兼容入口补齐会话缓存，不改原生 Anthropic 的缓存策略。
+	anthropicBody = ensureOpenAIAnthropicMessageCacheBreakpoints(anthropicBody, mappedModel)
+
 	// 7. Enforce cache_control block limit
 	anthropicBody = enforceCacheControlLimit(anthropicBody)
 
