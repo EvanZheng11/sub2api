@@ -128,7 +128,7 @@ func TestCreateGrokResponsesTestPayloadUsesPromptAndReasoningEffort(t *testing.T
 func TestCreateTestPayloadCustomPromptGetsLargerOutputBudget(t *testing.T) {
 	custom, err := createTestPayload("claude-opus-5", "请生成一个 SVG 时钟的完整代码。", "")
 	require.NoError(t, err)
-	require.Equal(t, int64(8192), gjson.GetBytes(reasoningTestJSON(t, custom), "max_tokens").Int())
+	require.Equal(t, int64(128000), gjson.GetBytes(reasoningTestJSON(t, custom), "max_tokens").Int())
 
 	probe, err := createTestPayload("claude-opus-5", "", "")
 	require.NoError(t, err)
@@ -136,7 +136,30 @@ func TestCreateTestPayloadCustomPromptGetsLargerOutputBudget(t *testing.T) {
 
 	// Bedrock 空探测保留 256，自定义题目同样放大。
 	require.Equal(t, 256, accountTestOutputBudget("", 256))
-	require.Equal(t, 8192, accountTestOutputBudget("写一个 SVG", 256))
+	require.Equal(t, 128000, accountTestOutputBudget("写一个 SVG", 256))
+}
+
+// 模型声明的输出上限低于 128000 时按模型上限封顶，避免上游直接 400；
+// 上限未知（0）或高于 128000 时沿用 128000 预算；空题目探测不受封顶影响。
+func TestAccountTestOutputBudgetClampsToModelLimit(t *testing.T) {
+	require.Equal(t, 128000, accountTestOutputBudgetForModel("写一个 SVG", accountTestProbeMaxTokens, 0))
+	require.Equal(t, 128000, accountTestOutputBudgetForModel("写一个 SVG", accountTestProbeMaxTokens, 128000))
+	require.Equal(t, 128000, accountTestOutputBudgetForModel("写一个 SVG", accountTestProbeMaxTokens, 256000))
+	require.Equal(t, 64000, accountTestOutputBudgetForModel("写一个 SVG", accountTestProbeMaxTokens, 64000))
+	require.Equal(t, 1024, accountTestOutputBudgetForModel("", accountTestProbeMaxTokens, 64000))
+
+	payload, err := createTestPayloadWithMaxOutput("claude-sonnet-5", "写一个 SVG", "", 64000)
+	require.NoError(t, err)
+	require.Equal(t, int64(64000), gjson.GetBytes(reasoningTestJSON(t, payload), "max_tokens").Int())
+}
+
+// OpenAI Chat Completions 测试在自定义题目时也必须显式给出 128000 输出预算，空探测保持原样。
+func TestCreateOpenAIChatCompletionsTestPayloadCustomPromptGetsOutputBudget(t *testing.T) {
+	custom := reasoningTestJSON(t, createOpenAIChatCompletionsTestPayload("gpt-5.4", "写一份 CSV 示例。", ""))
+	require.Equal(t, int64(128000), gjson.GetBytes(custom, "max_tokens").Int())
+
+	probe := reasoningTestJSON(t, createOpenAIChatCompletionsTestPayload("gpt-5.4", "", ""))
+	require.False(t, gjson.GetBytes(probe, "max_tokens").Exists())
 }
 
 // compact 探测不执行自定义题目：必须在任何 SSE 写入前返回 400 级错误。

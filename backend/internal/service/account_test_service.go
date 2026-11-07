@@ -52,7 +52,7 @@ const (
 	// 空题目的固定探测沿用原预算；自定义题目必须给足输出空间（SVG 等长文本极易被截断）。
 	accountTestProbeMaxTokens        = 1024
 	accountTestBedrockProbeMaxTokens = 256
-	accountTestCustomPromptMaxTokens = 8192
+	accountTestCustomPromptMaxTokens = 128000
 )
 
 // TestEvent represents a SSE event for account testing
@@ -339,9 +339,28 @@ func accountTestOutputBudget(prompt string, probeMaxTokens int) int {
 	return accountTestCustomPromptMaxTokens
 }
 
+// accountTestOutputBudgetForModel 在 accountTestOutputBudget 的基础之上，用模型声明的
+// 输出上限封顶：把 128000 直接发给最高只支持 64K（甚至 8K）的模型会被上游 400 拒绝，
+// 账号测试会整条变红而不是只截断输出。maxOutputTokens <= 0 表示上限未知，此时沿用
+// 128000 预算，由上游自行决定是否接受。
+func accountTestOutputBudgetForModel(prompt string, probeMaxTokens int, maxOutputTokens int64) int {
+	budget := accountTestOutputBudget(prompt, probeMaxTokens)
+	if maxOutputTokens > 0 && maxOutputTokens < int64(budget) {
+		return int(maxOutputTokens)
+	}
+	return budget
+}
+
 // createTestPayload 构造 Claude Code 风格的测试请求体。
-// prompt 为空时保留原有 "hi" 探测语义；effort 非空时走 output_config.effort。
+// prompt 为空时保留原有 "hi" 探测语义；effort 非空时走 output_config.effort；
+// maxOutputTokens 为该模型声明的输出上限（<=0 表示未知，不做封顶）。
 func createTestPayload(modelID string, prompt string, effort string) (map[string]any, error) {
+	return createTestPayloadWithMaxOutput(modelID, prompt, effort, 0)
+}
+
+// createTestPayloadWithMaxOutput 是 createTestPayload 的带输出上限版本，
+// 供 Anthropic 及其兼容端点按模型上限收紧 max_tokens。
+func createTestPayloadWithMaxOutput(modelID string, prompt string, effort string, maxOutputTokens int64) (map[string]any, error) {
 	sessionID, err := generateSessionString()
 	if err != nil {
 		return nil, err
@@ -379,7 +398,7 @@ func createTestPayload(modelID string, prompt string, effort string) (map[string
 		"metadata": map[string]string{
 			"user_id": sessionID,
 		},
-		"max_tokens":  accountTestOutputBudget(prompt, accountTestProbeMaxTokens),
+		"max_tokens":  accountTestOutputBudgetForModel(prompt, accountTestProbeMaxTokens, maxOutputTokens),
 		"temperature": 1,
 		"stream":      true,
 	}
@@ -654,8 +673,9 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	// Create Claude Code style payload (same for all account types)
-	payload, err := createTestPayload(testModelID, prompt, effort)
+	// Create Claude Code style payload (same for all account types)，并按模型声明的输出上限封顶。
+	payload, err := createTestPayloadWithMaxOutput(testModelID, prompt, effort,
+		accountTestModelMaxOutputTokens(account, testModelID))
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
@@ -750,7 +770,8 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payload, err := createTestPayload(testModelID, prompt, effort)
+	payload, err := createTestPayloadWithMaxOutput(testModelID, prompt, effort,
+		accountTestModelMaxOutputTokens(account, testModelID))
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
@@ -839,7 +860,7 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 				},
 			},
 		},
-		"max_tokens":  accountTestOutputBudget(bedrockPrompt, accountTestBedrockProbeMaxTokens),
+		"max_tokens":  accountTestOutputBudgetForModel(bedrockPrompt, accountTestBedrockProbeMaxTokens, 0),
 		"temperature": 1,
 	}
 	bedrockBody, _ := json.Marshal(bedrockPayload)
@@ -2967,6 +2988,10 @@ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string, effor
 	}
 	if effort = strings.TrimSpace(effort); effort != "" {
 		payload["reasoning_effort"] = effort
+	}
+	// 自定义题目给足输出空间并显式带上 max_tokens；空题目保持无上限的最小探测。
+	if strings.TrimSpace(prompt) != "" {
+		payload["max_tokens"] = accountTestOutputBudget(prompt, accountTestProbeMaxTokens)
 	}
 	return payload
 }

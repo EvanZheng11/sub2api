@@ -580,6 +580,21 @@ func (s *AccountTestService) fetchModelsDevMetadata(
 	return metadata, nil
 }
 
+// accountTestModelMaxOutputTokens 返回账号缓存的上游模型元数据里声明的输出上限（tokens）。
+// 只读快照、不发外部请求：账号测试不能因为额外抓取 models.dev 而多一次网络往返，
+// 也不能在元数据服务不可用时失败。取不到或未声明上限时返回 0，调用方据此不做封顶。
+func accountTestModelMaxOutputTokens(account *Account, modelID string) int64 {
+	modelID = strings.TrimSpace(modelID)
+	if account == nil || modelID == "" {
+		return 0
+	}
+	metadata, ok := account.GetUpstreamModelMetadata(modelID)
+	if !ok || metadata.MaxOutputTokens <= 0 {
+		return 0
+	}
+	return metadata.MaxOutputTokens
+}
+
 func (s *AccountTestService) fetchModelsDevRegistry(ctx context.Context, account *Account) (map[string]modelsDevProvider, error) {
 	now := time.Now()
 	s.modelMetadataRegistryMu.Lock()

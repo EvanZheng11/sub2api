@@ -70,7 +70,8 @@ func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Co
 	}
 	apiURL := strings.TrimRight(baseURL, "/") + "/v1/messages"
 
-	payload, err := createTestPayload(testModelID, prompt, "")
+	payload, err := createTestPayloadWithMaxOutput(testModelID, prompt, "",
+		accountTestModelMaxOutputTokens(account, testModelID))
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create adaptive Anthropic test payload")
 	}
@@ -255,7 +256,8 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payload, err := createTestPayload(testModelID, prompt, "")
+	payload, err := createTestPayloadWithMaxOutput(testModelID, prompt, "",
+		accountTestModelMaxOutputTokens(account, testModelID))
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create Anthropic test payload")
 	}

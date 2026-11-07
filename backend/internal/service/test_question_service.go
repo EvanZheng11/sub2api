@@ -19,8 +19,9 @@ const (
 )
 
 const (
-	maxTestQuestionTitleLen  = 200
-	maxTestQuestionPromptLen = 20000
+	maxTestQuestionTitleLen = 200
+	// 题目提示词按 UTF-8 字符（rune）计上限，128000 与测试输出预算同口径。
+	maxTestQuestionPromptLen = 128000
 )
 
 var (
@@ -29,7 +30,7 @@ var (
 	ErrTestQuestionTitleEmpty    = infraerrors.BadRequest("TEST_QUESTION_TITLE_REQUIRED", "题目标题不能为空")
 	ErrTestQuestionPromptEmpty   = infraerrors.BadRequest("TEST_QUESTION_PROMPT_REQUIRED", "题目提示词不能为空")
 	ErrTestQuestionTitleTooLong  = infraerrors.BadRequest("TEST_QUESTION_TITLE_TOO_LONG", "题目标题过长，最多 200 个字符")
-	ErrTestQuestionPromptTooLong = infraerrors.BadRequest("TEST_QUESTION_PROMPT_TOO_LONG", "题目提示词过长，最多 20000 个字符")
+	ErrTestQuestionPromptTooLong = infraerrors.BadRequest("TEST_QUESTION_PROMPT_TOO_LONG", "题目提示词过长，最多 128000 个字符")
 )
 
 // TestQuestion 是题库中的一道测试题目。
