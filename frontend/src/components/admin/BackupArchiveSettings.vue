@@ -66,9 +66,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import type { BackupMonthlyArchiveConfig } from '@/api/admin/backup'
 
 const props = defineProps<{ modelValue: BackupMonthlyArchiveConfig }>()
@@ -117,9 +118,10 @@ async function openDatesWithKeyboard() {
 function handleFocusOut(event: FocusEvent) {
   if (event.relatedTarget instanceof Node && !datePicker.value?.contains(event.relatedTarget)) closeDates()
 }
-function handleOutsideClick(event: MouseEvent) {
-  if (event.target instanceof Node && !datePicker.value?.contains(event.target)) closeDates()
-}
-onMounted(() => document.addEventListener('click', handleOutsideClick))
-onBeforeUnmount(() => document.removeEventListener('click', handleOutsideClick))
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起日期选项。
+useDropdownDismiss({
+  isOpen: datesOpen,
+  close: () => closeDates(),
+  inside: () => [datePicker.value]
+})
 </script>

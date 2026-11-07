@@ -228,6 +228,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'
 import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'
@@ -810,11 +811,14 @@ const toggleCurrentColumn = (key: string) => {
 
 const showColumnDropdown = ref(false)
 const columnDropdownRef = ref<HTMLElement | null>(null)
-const handleColumnClickOutside = (event: MouseEvent) => {
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(event.target as HTMLElement)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起列设置下拉。
+useDropdownDismiss({
+  isOpen: showColumnDropdown,
+  close: () => {
     showColumnDropdown.value = false
-  }
-}
+  },
+  inside: () => [columnDropdownRef.value]
+})
 
 const loadApiKeys = async () => {
   const firstPage = await keysAPI.list(1, 100)
@@ -901,14 +905,13 @@ const switchToErrors = () => {
 onMounted(() => {
   loadSavedColumns()
   loadSavedErrColumns()
-  document.addEventListener('click', handleColumnClickOutside)
   void loadFilterOptions()
   refreshData()
 })
 
 onUnmounted(() => {
   abortController?.abort()
-  document.removeEventListener('click', handleColumnClickOutside)
+  // 列设置下拉的失焦关闭由 useDropdownDismiss 自行清理
 })
 
 watch(endpointDistributionSource, () => {
