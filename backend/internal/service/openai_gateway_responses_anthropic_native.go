@@ -347,7 +347,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
+	// 不提前写响应头：语义输出出现前保持未提交，上游空流/中断时 handler 才能换号重试。
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
@@ -358,6 +358,10 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	// semanticOutputStarted 为 false 时所有事件先缓冲，不写客户端；
+	// 上游正常结束却始终没有语义输出时视为上游故障，返回 failover。
+	semanticOutputStarted := false
+	var pendingEvents []apicompat.ResponsesStreamEvent
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -406,6 +410,12 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			zap.String("request_id", requestID),
 			zap.Duration("interval", streamInterval),
 		)
+		if !semanticOutputStarted {
+			return resultWithUsage(), fmt.Errorf(
+				"stream data interval timeout: %w",
+				newOpenAIStreamFailoverError(resp, "stream idle before semantic output"),
+			)
+		}
 		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 	}
 
@@ -437,6 +447,22 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			return
 		}
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
+		// 语义输出门控：语义输出出现前缓冲事件，只放过语义事件本身。
+		if !semanticOutputStarted {
+			isTerminalMessageDelta := event.Type == "message_delta" &&
+				event.Delta != nil && event.Delta.StopReason != ""
+			if !anthropicEventHasSemanticOutput(event) && event.Type != "message_stop" && !isTerminalMessageDelta {
+				pendingEvents = append(pendingEvents, events...)
+				return
+			}
+			if !anthropicEventHasSemanticOutput(event) {
+				return
+			}
+			semanticOutputStarted = true
+			pendingEvents = append(pendingEvents, events...)
+			events = pendingEvents
+			pendingEvents = nil
+		}
 		for _, evt := range events {
 			payload, err := json.Marshal(evt)
 			if err != nil {
@@ -503,6 +529,19 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 
 	if failure := streamStatus.failure(); failure != nil {
 		_ = resp.Body.Close()
+		if !semanticOutputStarted {
+			// 客户端还没看到任何语义输出：按上游故障换号重试，不写 response.failed。
+			logger.L().Warn("openai responses via native anthropic stream: stream interrupted before semantic output",
+				zap.String("request_id", requestID),
+				zap.String("error_type", failure.errType),
+			)
+			return resultWithUsage(), fmt.Errorf(
+				"%s: %w: %w",
+				failure.message,
+				failure.err,
+				newOpenAIStreamFailoverError(resp, "stream interrupted before semantic output"),
+			)
+		}
 		if !clientDisconnected {
 			writeAnthropicCompatResponsesStreamFailure(c, state, clientToolRestorer, failure)
 		}
@@ -511,6 +550,15 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 
 	if clientDisconnected {
 		return resultWithUsage(), nil
+	}
+
+	// 上游已正常结束（message_stop 或带 stop_reason 的 message_delta），但整条流
+	// 没有任何语义输出：不能把空结果当成功返回，按上游故障换号重试。
+	if !semanticOutputStarted {
+		logger.L().Warn("openai responses via native anthropic stream: stream ended without semantic output",
+			zap.String("request_id", requestID),
+		)
+		return resultWithUsage(), newOpenAIStreamFailoverError(resp, "stream ended without semantic output")
 	}
 
 	// Finalize only after the upstream has supplied a terminal event.
