@@ -135,7 +135,7 @@
           <template #cell-address="{ row }">
             <div class="flex items-center gap-1.5">
               <code class="code text-xs">{{ row.host }}:{{ row.port }}</code>
-              <div class="relative">
+              <div class="relative copy-menu-anchor">
                 <button
                   type="button"
                   class="rounded p-0.5 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400"
@@ -966,6 +966,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type { Proxy, ProxyAccountSummary, ProxyProtocol, ProxyQualityCheckResult } from '@/types'
@@ -2075,15 +2076,21 @@ function closeCopyMenu() {
   copyMenuProxyId.value = null
 }
 
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起右键复制菜单。
+// 菜单在表格单元格内渲染，用包裹触发器与菜单的容器 class 定位内部区域（单元格处于 v-for 中，不便用单一 ref）。
+useDropdownDismiss({
+  isOpen: () => copyMenuProxyId.value !== null,
+  close: closeCopyMenu,
+  inside: () => Array.from(document.querySelectorAll('.copy-menu-anchor'))
+})
+
 onMounted(() => {
   loadProxies()
   loadBackupProxyOptions()
-  document.addEventListener('click', closeCopyMenu)
 })
 
 onUnmounted(() => {
   clearTimeout(searchTimeout)
   abortController?.abort()
-  document.removeEventListener('click', closeCopyMenu)
 })
 </script>

@@ -204,7 +204,7 @@
               <div v-if="canRetry(row) || canDeleteRecord(row)">
                 <button
                   type="button"
-                  class="batch-row-action flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/30 dark:hover:bg-dark-700 dark:hover:text-white"
+                  class="batch-row-action batch-more-trigger flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/30 dark:hover:bg-dark-700 dark:hover:text-white"
                   :class="{ 'bg-gray-100 text-gray-900 dark:bg-dark-700 dark:text-white': openMoreJobId === row.id }"
                   :title="t('batchImage.actions.moreActions')"
                   @click.stop="toggleMoreMenu(row, $event)"
@@ -281,6 +281,7 @@
     <Teleport to="body">
       <div
         v-if="openMoreJobId"
+        ref="moreMenuRef"
         class="fixed z-[9999] w-44 overflow-hidden rounded-xl bg-white py-1 text-sm shadow-lg ring-1 ring-black/5 dark:bg-dark-800 dark:ring-white/10"
         :style="moreMenuStyle"
         @click.stop
@@ -753,6 +754,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -1394,6 +1396,15 @@ function toggleChildRows(batchId: string) {
 function closeMoreMenu() {
   openMoreJobId.value = ''
 }
+
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起行操作菜单。
+// 菜单被 Teleport 到 body，需单独传入弹层元素；触发按钮按既有 class 定位。
+const moreMenuRef = ref<HTMLElement | null>(null)
+useDropdownDismiss({
+  isOpen: () => openMoreJobId.value !== '',
+  close: closeMoreMenu,
+  inside: () => [moreMenuRef.value, ...Array.from(document.querySelectorAll('.batch-more-trigger'))]
+})
 
 function toggleMoreMenu(job: BatchImageJobRow, event: MouseEvent) {
   if (openMoreJobId.value === job.id) {
@@ -2606,7 +2617,6 @@ onMounted(() => {
   previewCacheCleanupTimer = setInterval(() => {
     void cleanupPreviewCache()
   }, 60 * 60 * 1000)
-  document.addEventListener('click', closeMoreMenu)
   window.addEventListener('resize', closeMoreMenu)
   window.addEventListener('scroll', closeMoreMenu, true)
   window.addEventListener('resize', closePromptPopover)
@@ -2641,7 +2651,6 @@ onBeforeUnmount(() => {
     previewCacheCleanupTimer = null
   }
   clearItemPreviews()
-  document.removeEventListener('click', closeMoreMenu)
   window.removeEventListener('resize', closeMoreMenu)
   window.removeEventListener('scroll', closeMoreMenu, true)
   window.removeEventListener('resize', closePromptPopover)

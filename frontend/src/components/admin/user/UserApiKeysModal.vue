@@ -113,6 +113,7 @@ import { adminAPI } from '@/api/admin'
 import { formatDateTime } from '@/utils/format'
 import type { AdminUser, AdminGroup, ApiKey } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import GroupBadge from '@/components/common/GroupBadge.vue'
 import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
 
@@ -237,16 +238,13 @@ const handleKeyDown = (event: KeyboardEvent) => {
   }
 }
 
-const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as HTMLElement
-  if (dropdownRef.value && !dropdownRef.value.contains(target)) {
-    // Check if the click is on one of the group trigger buttons
-    for (const el of groupButtonRefs.value.values()) {
-      if (el.contains(target)) return
-    }
-    closeGroupSelector()
-  }
-}
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起分组选择器。
+// 弹层被 Teleport 到 body，需一并传入弹层元素与各行的触发按钮。
+useDropdownDismiss({
+  isOpen: () => groupSelectorKeyId.value !== null,
+  close: closeGroupSelector,
+  inside: () => [dropdownRef.value, ...Array.from(groupButtonRefs.value.values())]
+})
 
 const handleClose = () => {
   closeGroupSelector()
@@ -254,12 +252,10 @@ const handleClose = () => {
 }
 
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleKeyDown, true)
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('keydown', handleKeyDown, true)
 })
 </script>

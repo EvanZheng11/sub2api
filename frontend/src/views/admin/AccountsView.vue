@@ -79,6 +79,7 @@
                 <Teleport to="body">
                   <div
                     v-if="showAccountToolsDropdown"
+                    ref="accountToolsPanelRef"
                     class="fixed z-[9999] origin-top-right overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl dark:border-dark-700 dark:bg-dark-800"
                     :style="accountToolsDropdownStyle"
                     @click.stop
@@ -500,6 +501,7 @@ import { adminAPI } from '@/api/admin'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -633,6 +635,8 @@ useIntervalFn(() => { upstreamBillingNow.value = Date.now() }, 60_000)
 // Account tools dropdown
 const showAccountToolsDropdown = ref(false)
 const accountToolsDropdownRef = ref<HTMLElement | null>(null)
+// 弹层被 Teleport 到 body，需单独持有引用用于判断"内部点击"
+const accountToolsPanelRef = ref<HTMLElement | null>(null)
 const accountToolsTriggerRef = ref<HTMLElement | null>(null)
 const accountToolsDropdownPosition = reactive({
   top: null as number | null,
@@ -2513,16 +2517,23 @@ const handleViewportResize = () => {
   if (showAccountToolsDropdown.value) updateAccountToolsDropdownPosition()
 }
 
-// 点击外部关闭顶部下拉菜单
-const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as HTMLElement
-  if (accountToolsDropdownRef.value && !accountToolsDropdownRef.value.contains(target)) {
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起两个顶部下拉；分别注册以保持各自的内部区域语义。
+// 账号工具菜单的弹层被 Teleport 到 body，因此内部区域同时包含触发器容器与弹层元素。
+useDropdownDismiss({
+  isOpen: showAccountToolsDropdown,
+  close: () => {
     showAccountToolsDropdown.value = false
-  }
-  if (autoRefreshDropdownRef.value && !autoRefreshDropdownRef.value.contains(target)) {
+  },
+  inside: () => [accountToolsDropdownRef.value, accountToolsPanelRef.value]
+})
+
+useDropdownDismiss({
+  isOpen: showAutoRefreshDropdown,
+  close: () => {
     showAutoRefreshDropdown.value = false
-  }
-}
+  },
+  inside: () => [autoRefreshDropdownRef.value]
+})
 
 onMounted(async () => {
   if (typeof window !== 'undefined') {
@@ -2556,7 +2567,6 @@ onMounted(async () => {
   }
   window.addEventListener('scroll', handleScroll, true)
   window.addEventListener('resize', handleViewportResize)
-  document.addEventListener('click', handleClickOutside)
 
   if (autoRefreshEnabled.value) {
     autoRefreshCountdown.value = autoRefreshIntervalSeconds.value
@@ -2575,7 +2585,6 @@ onUnmounted(() => {
   pendingUsageBatchIds.clear()
   window.removeEventListener('scroll', handleScroll, true)
   window.removeEventListener('resize', handleViewportResize)
-  document.removeEventListener('click', handleClickOutside)
   if (desktopViewportMediaQuery && desktopViewportListener) {
     if (typeof desktopViewportMediaQuery.removeEventListener === 'function') {
       desktopViewportMediaQuery.removeEventListener('change', desktopViewportListener)

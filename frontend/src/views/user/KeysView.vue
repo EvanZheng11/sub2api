@@ -1205,6 +1205,7 @@
 	import { useOnboardingStore } from '@/stores/onboarding'
 	import { useClipboard } from '@/composables/useClipboard'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 
 const { t } = useI18n()
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
@@ -1780,17 +1781,22 @@ const changeGroup = async (key: ApiKey, newGroupId: number | null) => {
   }
 }
 
-const closeGroupSelector = (event: MouseEvent) => {
-  const target = event.target as HTMLElement
-  // Check if click is inside the dropdown or the trigger button
-  if (!target.closest('.group\\/dropdown') && !dropdownRef.value?.contains(target)) {
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起分组选择器与列设置下拉。
+// 分组选择器被 Teleport 到 body，需单独传入弹层元素；触发器按既有 class 定位。
+useDropdownDismiss({
+  isOpen: () => groupSelectorKeyId.value !== null,
+  close: () => {
     groupSelectorKeyId.value = null
     dropdownPosition.value = null
-  }
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) {
-    showColumnDropdown.value = false
-  }
-}
+  },
+  inside: () => [dropdownRef.value, ...Array.from(document.querySelectorAll('.group\\/dropdown'))]
+})
+
+useDropdownDismiss({
+  isOpen: showColumnDropdown,
+  close: () => { showColumnDropdown.value = false },
+  inside: () => [columnDropdownRef.value]
+})
 
 const confirmDelete = (key: ApiKey) => {
   selectedKey.value = key
@@ -2084,12 +2090,10 @@ onMounted(() => {
   loadGroups()
   loadUserGroupRates()
   loadPublicSettings()
-  document.addEventListener('click', closeGroupSelector)
   resetTimer = setInterval(() => { now.value = new Date() }, 60000)
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', closeGroupSelector)
   if (resetTimer) clearInterval(resetTimer)
 })
 </script>
