@@ -126,11 +126,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/icons/Icon.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import { useKeyedDebouncedSearch } from "@/composables/useKeyedDebouncedSearch";
+import { useDropdownDismiss } from "@/composables/useDropdownDismiss";
 import { adminAPI } from "@/api/admin";
 import type { CodexModelsManifestConfig } from "@/types";
 
@@ -171,18 +172,13 @@ const showDropdown = ref(false);
 const showValidationError = ref(false);
 const searchContainerRef = ref<HTMLElement | null>(null);
 
-// 点击下拉容器外部时收起（与 GroupsView 模型路由下拉同一模式）。
-const handleDocumentClick = (event: MouseEvent) => {
-  const target = event.target as HTMLElement;
-  if (searchContainerRef.value && !searchContainerRef.value.contains(target)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起搜索结果下拉。
+useDropdownDismiss({
+  isOpen: showDropdown,
+  close: () => {
     showDropdown.value = false;
-  }
-};
-onMounted(() => {
-  document.addEventListener("click", handleDocumentClick);
-});
-onUnmounted(() => {
-  document.removeEventListener("click", handleDocumentClick);
+  },
+  inside: () => [searchContainerRef.value],
 });
 
 const searchRunner = useKeyedDebouncedSearch<SimpleAccount[]>({

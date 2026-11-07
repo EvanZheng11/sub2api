@@ -172,6 +172,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import Icon from '@/components/icons/Icon.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import type { Proxy } from '@/types'
 
 const { t } = useI18n()
@@ -287,12 +288,15 @@ const handleBatchTest = async () => {
   batchTesting.value = false
 }
 
-const handleClickOutside = (event: MouseEvent) => {
-  if (containerRef.value && !containerRef.value.contains(event.target as Node)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起代理下拉。
+useDropdownDismiss({
+  isOpen,
+  close: () => {
     isOpen.value = false
     searchQuery.value = ''
-  }
-}
+  },
+  inside: () => [containerRef.value]
+})
 
 const handleEscape = (event: KeyboardEvent) => {
   if (event.key === 'Escape' && isOpen.value) {
@@ -302,12 +306,10 @@ const handleEscape = (event: KeyboardEvent) => {
 }
 
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleEscape)
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('keydown', handleEscape)
 })
 </script>

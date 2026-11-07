@@ -83,6 +83,7 @@ import type { CSSProperties } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '@/components/icons/Icon.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { monitorIntlLocale } from '@/features/channel-monitor-v2/monitorFormat'
 
 interface FilterOption {
@@ -189,14 +190,12 @@ function formatCount(value: number) {
   }).format(value)
 }
 
-function onDocumentMouseDown(event: MouseEvent) {
-  if (!isOpen.value) return
-  const target = event.target as Node | null
-  if (!target) return
-  if (containerRef.value?.contains(target)) return
-  if (dropdownRef.value?.contains(target)) return
-  close()
-}
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起筛选下拉。
+useDropdownDismiss({
+  isOpen,
+  close,
+  inside: () => [containerRef.value, dropdownRef.value],
+})
 
 function onDocumentKeyDown(event: KeyboardEvent) {
   if (event.key === 'Escape') close()
@@ -210,12 +209,10 @@ watch(isOpen, async (open) => {
   if (open) {
     await nextTick()
     positionDropdown()
-    document.addEventListener('mousedown', onDocumentMouseDown)
     document.addEventListener('keydown', onDocumentKeyDown)
     window.addEventListener('resize', onWindowChange)
     window.addEventListener('scroll', onWindowChange, true)
   } else {
-    document.removeEventListener('mousedown', onDocumentMouseDown)
     document.removeEventListener('keydown', onDocumentKeyDown)
     window.removeEventListener('resize', onWindowChange)
     window.removeEventListener('scroll', onWindowChange, true)
@@ -223,7 +220,6 @@ watch(isOpen, async (open) => {
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', onDocumentMouseDown)
   document.removeEventListener('keydown', onDocumentKeyDown)
   window.removeEventListener('resize', onWindowChange)
   window.removeEventListener('scroll', onWindowChange, true)

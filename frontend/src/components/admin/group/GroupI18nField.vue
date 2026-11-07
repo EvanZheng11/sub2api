@@ -68,10 +68,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import { availableLocales } from '@/i18n'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import type { GroupI18n } from '@/types'
 
 // 透传的属性（rows、data-tour 等）落在输入控件上，而不是外层容器
@@ -163,17 +164,12 @@ async function selectLocale(code: string) {
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
 
-function handleClickOutside(event: MouseEvent) {
-  if (menuRef.value && !menuRef.value.contains(event.target as Node)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起语言选择菜单。
+useDropdownDismiss({
+  isOpen: menuOpen,
+  close: () => {
     menuOpen.value = false
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', handleClickOutside)
+  },
+  inside: () => [menuRef.value]
 })
 </script>

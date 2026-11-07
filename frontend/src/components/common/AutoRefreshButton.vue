@@ -52,8 +52,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 
 defineProps<{
   enabled: boolean
@@ -71,12 +72,12 @@ const { t } = useI18n()
 const showDropdown = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
 
-function handleClickOutside(event: MouseEvent) {
-  if (dropdownRef.value && !dropdownRef.value.contains(event.target as Node)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起刷新间隔菜单。
+useDropdownDismiss({
+  isOpen: showDropdown,
+  close: () => {
     showDropdown.value = false
-  }
-}
-
-onMounted(() => document.addEventListener('click', handleClickOutside))
-onBeforeUnmount(() => document.removeEventListener('click', handleClickOutside))
+  },
+  inside: () => [dropdownRef.value]
+})
 </script>

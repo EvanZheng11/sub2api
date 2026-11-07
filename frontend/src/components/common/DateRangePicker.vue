@@ -79,6 +79,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 
 interface DatePreset {
   labelKey: string
@@ -271,11 +272,14 @@ const apply = () => {
   isOpen.value = false
 }
 
-const handleClickOutside = (event: MouseEvent) => {
-  if (containerRef.value && !containerRef.value.contains(event.target as Node)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起日期面板。
+useDropdownDismiss({
+  isOpen,
+  close: () => {
     isOpen.value = false
-  }
-}
+  },
+  inside: () => [containerRef.value]
+})
 
 const handleEscape = (event: KeyboardEvent) => {
   if (event.key === 'Escape' && isOpen.value) {
@@ -309,14 +313,12 @@ watch(
 )
 
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleEscape)
   // Initialize active preset detection
   onDateChange()
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('keydown', handleEscape)
 })
 </script>

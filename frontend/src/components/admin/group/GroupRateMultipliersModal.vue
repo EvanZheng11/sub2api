@@ -22,7 +22,7 @@
           {{ t('admin.groups.addUserRate') }}
         </h4>
         <div class="flex items-end gap-2">
-          <div class="relative flex-1">
+          <div ref="searchContainerRef" class="relative flex-1">
             <input
               v-model="searchQuery"
               type="text"
@@ -249,6 +249,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import Icon from '@/components/icons/Icon.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { platformLabel } from '@/utils/platformColors'
 
 interface LocalEntry extends GroupRateMultiplierEntry {}
@@ -273,6 +274,7 @@ const localEntries = ref<LocalEntry[]>([])
 const searchQuery = ref('')
 const searchResults = ref<AdminUser[]>([])
 const showDropdown = ref(false)
+const searchContainerRef = ref<HTMLElement | null>(null)
 const selectedUser = ref<AdminUser | null>(null)
 const newRate = ref<number | null>(null)
 const currentPage = ref(1)
@@ -490,18 +492,17 @@ const handleClose = () => {
   emit('close')
 }
 
-// 点击外部关闭下拉
-const handleClickOutside = () => {
-  showDropdown.value = false
-}
-
-if (typeof document !== 'undefined') {
-  document.addEventListener('click', handleClickOutside)
-}
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起用户搜索下拉。
+useDropdownDismiss({
+  isOpen: showDropdown,
+  close: () => {
+    showDropdown.value = false
+  },
+  inside: () => [searchContainerRef.value]
+})
 onUnmounted(() => {
   loadVersion++
   clearTimeout(searchTimeout)
-  document.removeEventListener('click', handleClickOutside)
 })
 </script>
 

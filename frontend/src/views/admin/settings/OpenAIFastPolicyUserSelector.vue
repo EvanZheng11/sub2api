@@ -80,11 +80,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { adminAPI } from "@/api/admin";
 import type { SimpleUser } from "@/api/admin/usage";
 import Icon from "@/components/icons/Icon.vue";
+import { useDropdownDismiss } from "@/composables/useDropdownDismiss";
 
 const props = defineProps<{
   modelValue: number[];
@@ -203,12 +204,14 @@ async function hydrateSelectedUsers(userIds: number[]): Promise<void> {
   selectedUsers.value = next;
 }
 
-function handleDocumentClick(event: MouseEvent): void {
-  const target = event.target as Node | null;
-  if (target && !containerRef.value?.contains(target)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起用户搜索结果。
+useDropdownDismiss({
+  isOpen: showDropdown,
+  close: () => {
     showDropdown.value = false;
-  }
-}
+  },
+  inside: () => [containerRef.value],
+});
 
 watch(
   selectedUserIds,
@@ -218,12 +221,7 @@ watch(
   { immediate: true },
 );
 
-onMounted(() => {
-  document.addEventListener("click", handleDocumentClick);
-});
-
 onUnmounted(() => {
   clearPendingSearch();
-  document.removeEventListener("click", handleDocumentClick);
 });
 </script>

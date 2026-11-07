@@ -14,13 +14,16 @@ describe.each([GroupRPMOverridesModal, GroupRateMultipliersModal])('group modal 
     return mount(component, { props: { show: true, group: { id: 1, name: 'Group', platform: 'openai' } as AdminGroup },
       global: { stubs: { BaseDialog: { template: '<div><slot /></div>' }, Icon: true, PlatformIcon: true, Pagination: true } } })
   }
-  it('removes its document click listener on unmount', () => {
+  // 下拉收起监听由 useDropdownDismiss 注册：mousedown/click/focusin 均为捕获阶段监听。
+  it('removes its document listeners on unmount', () => {
     const add = vi.spyOn(document, 'addEventListener'); const remove = vi.spyOn(document, 'removeEventListener')
     const w = open()
-    const handlers = add.mock.calls.filter(([event]) => event === 'click').map(([, handler]) => handler)
-    expect(handlers.length).toBeGreaterThan(0)
+    const registrations = add.mock.calls.filter(([event]) => ['click', 'mousedown', 'focusin'].includes(event as string))
+    expect(registrations.length).toBeGreaterThan(0)
     w.unmount()
-    for (const handler of handlers) expect(remove).toHaveBeenCalledWith('click', handler)
+    for (const registration of registrations) expect(remove.mock.calls).toContainEqual(registration)
+    expect(add.mock.calls.filter(([event]) => ['click', 'mousedown', 'focusin'].includes(event as string)).length)
+      .toBe(registrations.length)
   })
   it('cancels a queued search when navigating away', async () => {
     const w = open(); await w.get('input[type="text"]').setValue('alice')

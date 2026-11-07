@@ -1,7 +1,7 @@
 <template>
   <div>
     <!-- Multi-select Dropdown -->
-    <div class="relative mb-3">
+    <div ref="dropdownContainerRef" class="relative mb-3">
       <div
         @click="toggleDropdown"
         class="cursor-pointer rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-dark-500 dark:bg-dark-700"
@@ -151,6 +151,7 @@ import { useAppStore } from '@/stores/app'
 import { accountsAPI } from '@/api/admin/accounts'
 import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
 import { useClipboard } from '@/composables/useClipboard'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
@@ -182,6 +183,7 @@ const appStore = useAppStore()
 const { copyToClipboard } = useClipboard()
 
 const showDropdown = ref(false)
+const dropdownContainerRef = ref<HTMLElement | null>(null)
 const searchQuery = ref('')
 const customModel = ref('')
 const isComposing = ref(false)
@@ -241,6 +243,16 @@ const toggleDropdown = () => {
   showDropdown.value = !showDropdown.value
   if (!showDropdown.value) searchQuery.value = ''
 }
+
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起模型白名单下拉，并清空搜索词。
+useDropdownDismiss({
+  isOpen: showDropdown,
+  close: () => {
+    showDropdown.value = false
+    searchQuery.value = ''
+  },
+  inside: () => [dropdownContainerRef.value]
+})
 
 const removeModel = (model: string) => {
   emit('update:modelValue', props.modelValue.filter(m => m !== model))

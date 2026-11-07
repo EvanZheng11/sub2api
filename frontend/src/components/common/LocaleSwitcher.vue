@@ -42,10 +42,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import { setLocale, availableLocales } from '@/i18n'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 
 const { locale } = useI18n()
 
@@ -76,18 +77,13 @@ async function selectLocale(code: string) {
   }
 }
 
-function handleClickOutside(event: MouseEvent) {
-  if (dropdownRef.value && !dropdownRef.value.contains(event.target as Node)) {
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起语言菜单。
+useDropdownDismiss({
+  isOpen,
+  close: () => {
     isOpen.value = false
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', handleClickOutside)
+  },
+  inside: () => [dropdownRef.value]
 })
 </script>
 

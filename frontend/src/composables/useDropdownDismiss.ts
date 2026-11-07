@@ -14,7 +14,7 @@ export interface DropdownDismissOptions {
 
 /**
  * 下拉弹层在"失去焦点"时收起：
- * - 鼠标按下下拉以外的区域（捕获阶段监听，避免被弹层或对话框内部的 stopPropagation 拦住）
+ * - 鼠标按下或点击下拉以外的区域（捕获阶段监听，避免被弹层或对话框内部的 stopPropagation 拦住）
  * - 焦点移出下拉（Tab 切换到其他输入框、程序化聚焦）
  * - 浏览器窗口/标签页失去焦点
  */
@@ -36,6 +36,12 @@ export function useDropdownDismiss(options: DropdownDismissOptions): void {
     options.close()
   }
 
+  // 键盘激活（Enter/空格触发 click）或脚本点击没有 mousedown，补一个 click 监听。
+  const handleClick = (event: MouseEvent) => {
+    if (!isActive() || isInside(event.target)) return
+    options.close()
+  }
+
   const handleFocusChange = (event: FocusEvent) => {
     if (!isActive() || isInside(event.target)) return
     options.close()
@@ -48,12 +54,14 @@ export function useDropdownDismiss(options: DropdownDismissOptions): void {
 
   onMounted(() => {
     document.addEventListener('mousedown', handlePointerDown, true)
+    document.addEventListener('click', handleClick, true)
     document.addEventListener('focusin', handleFocusChange, true)
     window.addEventListener('blur', handleWindowBlur)
   })
 
   onUnmounted(() => {
     document.removeEventListener('mousedown', handlePointerDown, true)
+    document.removeEventListener('click', handleClick, true)
     document.removeEventListener('focusin', handleFocusChange, true)
     window.removeEventListener('blur', handleWindowBlur)
   })

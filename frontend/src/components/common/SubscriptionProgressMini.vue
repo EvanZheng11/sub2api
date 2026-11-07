@@ -178,9 +178,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { useSubscriptionStore } from '@/stores'
 import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
 import type { UserSubscription } from '@/types'
@@ -291,24 +292,20 @@ function closeTooltip() {
   tooltipOpen.value = false
 }
 
-function handleClickOutside(event: MouseEvent) {
-  if (containerRef.value && !containerRef.value.contains(event.target as Node)) {
-    closeTooltip()
-  }
-}
+// 失去焦点（按下外部、焦点移出、窗口失焦）时收起订阅详情弹层。
+useDropdownDismiss({
+  isOpen: tooltipOpen,
+  close: closeTooltip,
+  inside: () => [containerRef.value]
+})
 
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
   // Trigger initial fetch if not already loaded
   // The actual data loading is handled by App.vue globally
   if (!subscriptionFeatureEnabled.value) return
   subscriptionStore.fetchActiveSubscriptions().catch((error) => {
     console.error('Failed to load subscriptions in SubscriptionProgressMini:', error)
   })
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', handleClickOutside)
 })
 </script>
 
