@@ -336,7 +336,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
+	// 不提前写响应头：语义输出出现前保持未提交，上游空流/中断时 handler 才能换号重试。
 
 	anthState := apicompat.NewAnthropicEventToResponsesState()
 	anthState.Model = originalModel
@@ -347,6 +347,10 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	// semanticOutputStarted 为 false 时所有 chunk 先缓冲，不写客户端；
+	// 上游正常结束却始终没有语义输出时视为上游故障，返回 failover。
+	semanticOutputStarted := false
+	var pendingChunks []apicompat.ChatCompletionsChunk
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -399,6 +403,12 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 				zap.Duration("interval", streamInterval),
 			)
 		}
+		if !semanticOutputStarted {
+			return resultWithUsage(), fmt.Errorf(
+				"stream data interval timeout: %w",
+				newOpenAIStreamFailoverError(resp, "stream idle before semantic output"),
+			)
+		}
 		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 	}
 
@@ -445,13 +455,30 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 		}
 
 		responsesEvents := apicompat.AnthropicEventToResponsesEvents(event, anthState)
+		var chunks []apicompat.ChatCompletionsChunk
 		for _, resEvt := range responsesEvents {
-			ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
-			for _, chunk := range ccChunks {
-				writeChunk(chunk)
-			}
+			chunks = append(chunks, apicompat.ResponsesEventToChatChunks(&resEvt, ccState)...)
 		}
-		if len(responsesEvents) > 0 {
+		// 语义输出门控：语义输出出现前缓冲 chunk，只放过语义事件本身。
+		if !semanticOutputStarted {
+			isTerminalMessageDelta := event.Type == "message_delta" &&
+				event.Delta != nil && event.Delta.StopReason != ""
+			if !anthropicEventHasSemanticOutput(event) && event.Type != "message_stop" && !isTerminalMessageDelta {
+				pendingChunks = append(pendingChunks, chunks...)
+				return false
+			}
+			if !anthropicEventHasSemanticOutput(event) {
+				return false
+			}
+			semanticOutputStarted = true
+			pendingChunks = append(pendingChunks, chunks...)
+			chunks = pendingChunks
+			pendingChunks = nil
+		}
+		for _, chunk := range chunks {
+			writeChunk(chunk)
+		}
+		if len(chunks) > 0 {
 			c.Writer.Flush()
 		}
 		return false
@@ -507,6 +534,19 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 
 	if failure := streamStatus.failure(); failure != nil {
 		_ = resp.Body.Close()
+		if !semanticOutputStarted {
+			// 客户端还没看到任何语义输出：按上游故障换号重试，不写终止错误帧。
+			logger.L().Warn("openai cc via native anthropic stream: stream interrupted before semantic output",
+				zap.String("request_id", requestID),
+				zap.String("error_type", failure.errType),
+			)
+			return resultWithUsage(), fmt.Errorf(
+				"%s: %w: %w",
+				failure.message,
+				failure.err,
+				newOpenAIStreamFailoverError(resp, "stream interrupted before semantic output"),
+			)
+		}
 		if !clientDisconnected {
 			writeAnthropicCompatCCStreamFailure(c, failure)
 		}
@@ -515,6 +555,15 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 
 	if clientDisconnected {
 		return resultWithUsage(), nil
+	}
+
+	// 上游已正常结束（message_stop 或带 stop_reason 的 message_delta），但整条流
+	// 没有任何语义输出：不能把空结果当成功返回，按上游故障换号重试。
+	if !semanticOutputStarted {
+		logger.L().Warn("openai cc via native anthropic stream: stream ended without semantic output",
+			zap.String("request_id", requestID),
+		)
+		return resultWithUsage(), newOpenAIStreamFailoverError(resp, "stream ended without semantic output")
 	}
 
 	// Finalize only after the upstream has supplied a terminal event.
