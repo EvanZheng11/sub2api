@@ -66,11 +66,15 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 			continue
 		}
 		diag.HasAccountsInPool = true
+		if isRetiredOpenAISubscriptionModel(&accounts[i], resolveOpenAIAccountUpstreamModelForRequest(&accounts[i], requestedModel, false)) {
+			diag.HasRetiredSubscriptionModel = true
+		}
 		// Mirrors the per-candidate filter used during account selection
 		// (openai_account_scheduler.isAccountRequestCompatible): empty
 		// model_mapping accepts everything; otherwise the explicit / wildcard
-		// mapping must match.
-		if supportsOpenAIRequestModel(&accounts[i], platform, requestedModel) {
+		// mapping must match。Anthropic 账号承接 OpenAI 分组的额外限制也要计入。
+		if supportsAnthropicBridgeRequestModel(&accounts[i], platform, requestedModel) &&
+			supportsOpenAIRequestModel(&accounts[i], requestedModel, false) {
 			diag.HasModelSupport = true
 			return diag
 		}

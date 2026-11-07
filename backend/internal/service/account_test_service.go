@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -643,7 +642,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/v1/messages?beta=true"
+		apiURL = buildAnthropicMessagesURL(normalizedBaseURL)
 	} else {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}
@@ -2501,6 +2500,14 @@ func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, accoun
 	}
 }
 
+// geminiDefaultTestModel 返回 Gemini 连接测试未指定模型时使用的模型；Google One 账号只能使用其保守模型集。
+func geminiDefaultTestModel(account *Account) string {
+	if account.IsGeminiGoogleOne() {
+		return geminicli.GoogleOneModels[0].ID
+	}
+	return geminicli.DefaultTestModel
+}
+
 // testGeminiAccountConnection tests a Gemini account's connection
 func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, effort ...string) error {
 	resolvedEffort := firstAccountTestEffort(effort)
@@ -2509,7 +2516,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	// Determine the model to use
 	testModelID := modelID
 	if testModelID == "" {
-		testModelID = geminicli.DefaultTestModel
+		testModelID = geminiDefaultTestModel(account)
 	}
 
 	// For static upstream credentials with model mapping, map the model
@@ -2589,7 +2596,7 @@ func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Accou
 
 // testAntigravityAccountConnection tests an Antigravity account's connection
 // 支持 Claude 和 Gemini 两种协议，使用非流式请求。
-// 空 prompt 走网关原有的固定最小探测；自定义题目走测试专用的请求体覆盖。
+// 空 prompt 由 antigravityTestPrompt 兜底为 "hi"，自定义题目原样带入上游请求。
 func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
 	ctx := c.Request.Context()
 
@@ -2609,14 +2616,8 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 	// Send test_start event
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
-	// 空题目复用网关固定探测；自定义题目用真实题目构造测试请求体（不发 effort，避免伪支持）。
-	var result *TestConnectionResult
-	var err error
-	if strings.TrimSpace(prompt) == "" {
-		result, err = s.antigravityGatewayService.TestConnection(ctx, account, testModelID)
-	} else {
-		result, err = s.testAntigravityPromptConnection(ctx, account, testModelID, prompt)
-	}
+	// 调用 AntigravityGatewayService.TestConnectionWithPrompt（复用协议转换逻辑）
+	result, err := s.antigravityGatewayService.TestConnectionWithPrompt(ctx, account, testModelID, prompt)
 	if err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}
@@ -2625,94 +2626,16 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 	if result.Text != "" {
 		s.sendEvent(c, TestEvent{Type: "content", Text: result.Text})
 	}
+	for _, img := range result.Images {
+		s.sendEvent(c, TestEvent{
+			Type:     "image",
+			ImageURL: img.ImageURL,
+			MimeType: img.MimeType,
+		})
+	}
 
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
-}
-
-// testAntigravityPromptConnection 用真实题目执行 Antigravity OAuth/Upstream 测试。
-// 网关公共 TestConnection 保持 "." + maxOutputTokens=1 的固定探测；这里只覆盖测试路径的
-// 请求体，鉴权、模型映射、重试与 URL 选择仍复用网关逻辑。
-func (s *AccountTestService) testAntigravityPromptConnection(ctx context.Context, account *Account, modelID, prompt string) (*TestConnectionResult, error) {
-	gw := s.antigravityGatewayService
-	if gw == nil || gw.tokenProvider == nil {
-		return nil, errors.New("antigravity token provider not configured")
-	}
-	accessToken, err := gw.tokenProvider.GetAccessToken(ctx, account)
-	if err != nil {
-		return nil, fmt.Errorf("获取 access_token 失败: %w", err)
-	}
-	projectID, err := resolveAntigravityProjectID(account)
-	if err != nil {
-		return nil, err
-	}
-	mappedModel := gw.getMappedModel(account, modelID)
-	if mappedModel == "" {
-		return nil, fmt.Errorf("model %s not in whitelist", modelID)
-	}
-	requestBody, err := s.buildAntigravityPromptTestRequest(ctx, projectID, mappedModel, prompt)
-	if err != nil {
-		return nil, fmt.Errorf("构建请求失败: %w", err)
-	}
-
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	prefix := fmt.Sprintf("[antigravity-Test] account=%d(%s)", account.ID, account.Name)
-	result, err := gw.antigravityRetryLoop(antigravityRetryLoopParams{
-		ctx:            ctx,
-		prefix:         prefix,
-		account:        account,
-		proxyURL:       proxyURL,
-		accessToken:    accessToken,
-		action:         "streamGenerateContent",
-		body:           requestBody,
-		c:              nil, // 无 gin.Context → 跳过 ops 追踪
-		httpUpstream:   gw.httpUpstream,
-		settingService: gw.settingService,
-		accountRepo:    gw.accountRepo,
-		handleError:    testConnectionHandleError,
-		requestedModel: modelID,
-	})
-	if err != nil {
-		var switchErr *AntigravityAccountSwitchError
-		if errors.As(err, &switchErr) {
-			return nil, fmt.Errorf("该账号模型 %s 当前限流中，请稍后重试", switchErr.RateLimitedModel)
-		}
-		return nil, err
-	}
-	if result == nil || result.resp == nil {
-		return nil, errors.New("upstream returned empty response")
-	}
-	defer func() { _ = result.resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(io.LimitReader(result.resp.Body, gw.upstreamErrorBodyReadLimit()))
-	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
-	}
-	if result.resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API 返回 %d: %s", result.resp.StatusCode, string(respBody))
-	}
-	return &TestConnectionResult{Text: extractTextFromSSEResponse(respBody), MappedModel: mappedModel}, nil
-}
-
-// buildAntigravityPromptTestRequest 把真实题目转成 Antigravity v1internal 请求体。
-// 输出预算用自定义题目常量，由 antigravity 转换器按模型上限收敛。
-func (s *AccountTestService) buildAntigravityPromptTestRequest(ctx context.Context, projectID, mappedModel, prompt string) ([]byte, error) {
-	content, err := json.Marshal(strings.TrimSpace(prompt))
-	if err != nil {
-		return nil, err
-	}
-	opts := s.antigravityGatewayService.getClaudeTransformOptions(ctx)
-	opts.EnableIdentityPatch = true // Antigravity 上游要求必须包含身份提示词
-	return antigravity.TransformClaudeToGeminiWithOptions(&antigravity.ClaudeRequest{
-		Model:     mappedModel,
-		Messages:  []antigravity.ClaudeMessage{{Role: "user", Content: content}},
-		MaxTokens: accountTestCustomPromptMaxTokens,
-		Stream:    false,
-	}, projectID, mappedModel, opts)
 }
 
 func antigravityConnectionTestModel(modelID string) string {
@@ -3292,11 +3215,14 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
 
+	// GPT Image models return base64 images by default and reject response_format.
 	payload := map[string]any{
-		"model":           modelID,
-		"prompt":          prompt,
-		"n":               1,
-		"response_format": "b64_json",
+		"model":  modelID,
+		"prompt": prompt,
+		"n":      1,
+	}
+	if size := account.OpenAIImageTestSize(); size != "" {
+		payload["size"] = size
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -3394,7 +3320,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		Endpoint: openAIImagesGenerationsEndpoint,
 		Model:    strings.TrimSpace(modelID),
 		Prompt:   prompt,
+		Size:     account.OpenAIImageTestSize(),
 	}
+	parsed.ExplicitSize = parsed.Size != ""
 	applyOpenAIImagesDefaults(parsed)
 
 	upstreamModel := account.GetMappedModel(parsed.Model)

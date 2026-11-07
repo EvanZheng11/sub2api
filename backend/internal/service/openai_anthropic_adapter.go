@@ -30,11 +30,18 @@ func (a *Account) supportsAnthropicOpenAITextBridge() bool {
 
 // 无显式映射的 Anthropic 账号只能承接 Claude，避免共享后抢走同组的 GPT 请求。
 // 显式映射仍可声明自定义别名；不改变原生 Anthropic 分组的模型支持语义。
-func supportsOpenAIRequestModel(account *Account, platform, model string) bool {
+// 与上游 openai_model_retirement.go 的 supportsOpenAIRequestModel（模型退役/compact 判定）互补，故单独命名。
+func supportsAnthropicBridgeRequestModel(account *Account, platform, model string) bool {
+	// 只有"Anthropic 账号承接 OpenAI 分组"这条桥接路径需要额外限制；
+	// 其余账号的模型支持/退役判定由上游 supportsOpenAIRequestModel 负责，
+	// 这里直接放行，避免与 compact 替换、透传放行等上游语义冲突。
+	if account == nil || !account.supportsAnthropicOpenAITextBridge() {
+		return true
+	}
 	if !account.IsModelSupported(model) {
 		return false
 	}
-	if platform == PlatformOpenAI && account.supportsAnthropicOpenAITextBridge() && len(account.GetModelMapping()) == 0 {
+	if platform == PlatformOpenAI && len(account.GetModelMapping()) == 0 {
 		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-")
 	}
 	return true

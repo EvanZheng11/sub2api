@@ -819,6 +819,43 @@ func TestDefaultPricingIncludesGemini4ArgonRates(t *testing.T) {
 	require.Contains(t, pricingSvc.ListModelNamesByProvider("gemini"), "gemini-4-argon")
 }
 
+func TestDefaultPricingIncludesGrok47FastRates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+
+	pricingSvc := &PricingService{}
+	pricingData, err := pricingSvc.parsePricingData(data)
+	require.NoError(t, err)
+	pricingSvc.pricingData = pricingData
+
+	for _, model := range []string{"grok-4.7-fast", "xai/grok-4.7-fast"} {
+		t.Run(model, func(t *testing.T) {
+			pricing := pricingSvc.GetModelPricing(model)
+			require.NotNil(t, pricing)
+			require.Equal(t, "xai", pricing.LiteLLMProvider)
+			require.InDelta(t, 4e-6, pricing.InputCostPerToken, 1e-15)
+			require.InDelta(t, 12e-6, pricing.OutputCostPerToken, 1e-15)
+			require.InDelta(t, 1e-6, pricing.CacheReadInputTokenCost, 1e-15)
+			// Long-context Fast is $6 / $1.50 / $18, i.e. 1.5x the Fast base card.
+			require.Equal(t, 200000, pricing.LongContextInputTokenThreshold)
+			require.InDelta(t, 1.5, pricing.LongContextInputCostMultiplier, 1e-12)
+			require.InDelta(t, 1.5, pricing.LongContextOutputCostMultiplier, 1e-12)
+		})
+	}
+	// The Fast entry must not shadow the standard grok-4.7 card.
+	standard := pricingSvc.GetModelPricing("grok-4.7")
+	require.NotNil(t, standard)
+	require.InDelta(t, 2e-6, standard.InputCostPerToken, 1e-15)
+
+	billing := NewBillingService(&config.Config{}, pricingSvc)
+	cost, err := billing.CalculateCost("grok-4.7-fast", UsageTokens{InputTokens: 150_000, CacheReadTokens: 50_000, OutputTokens: 10_000}, 1)
+	require.NoError(t, err)
+	require.True(t, cost.LongContextBillingApplied)
+	require.InDelta(t, 0.9, cost.InputCost, 1e-12)
+	require.InDelta(t, 0.075, cost.CacheReadCost, 1e-12)
+	require.InDelta(t, 0.18, cost.OutputCost, 1e-12)
+}
+
 func TestDefaultPricingUsesCurrentCodexAutoReviewBaseRates(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
 	require.NoError(t, err)
@@ -1277,4 +1314,43 @@ func TestCalculateCost_ClaudeSonnetCatalogLadderIsDataDriven(t *testing.T) {
 	cost, err = svc.CalculateCost("claude-sonnet-4-5", under, 1.0)
 	require.NoError(t, err)
 	require.False(t, cost.LongContextBillingApplied, "恰好 200000 不进高档（严格大于）")
+}
+
+// Antigravity 的 Claude 5.5 思考档位 ID 只决定推理深度，必须按基础型号计价，
+// 不能落入子串家族匹配（opus-5-5-high → claude-opus-5、sonnet-5-5-high → sonnet-4-5）。
+func TestPricingService_AntigravityClaude55TiersUseBaseModelPricing(t *testing.T) {
+	opus := &LiteLLMModelPricing{InputCostPerToken: 4e-6, OutputCostPerToken: 20e-6}
+	sonnet := &LiteLLMModelPricing{InputCostPerToken: 2e-6, OutputCostPerToken: 10e-6}
+	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"claude-opus-5-5":   opus,
+		"claude-sonnet-5-5": sonnet,
+		"claude-opus-5":     {InputCostPerToken: 5e-6, OutputCostPerToken: 25e-6},
+		"claude-sonnet-4-5": {InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6},
+	}}
+	for _, tier := range []string{"high", "medium", "low"} {
+		require.Same(t, opus, svc.GetModelPricing("claude-opus-5-5-"+tier))
+		require.Same(t, sonnet, svc.GetModelPricing("claude-sonnet-5-5-"+tier))
+	}
+
+	// 价格目录缺基础型号时走家族兜底，同样不能落到 claude-opus-5 / sonnet-4-5。
+	sparse := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+		"claude-opus-5":     {InputCostPerToken: 5e-6, OutputCostPerToken: 25e-6},
+		"claude-sonnet-4-5": {InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6},
+	}}
+	require.Same(t, claudeOpus55FallbackPricing, sparse.GetModelPricing("claude-opus-5-5-high"))
+	require.Same(t, claudeSonnet55FallbackPricing, sparse.GetModelPricing("claude-sonnet-5-5-low"))
+}
+
+func TestBillingService_AntigravityClaude55TierFallbacksUseBaseRates(t *testing.T) {
+	svc := NewBillingService(&config.Config{}, nil)
+	tokens := UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000}
+	for _, tier := range []string{"high", "medium", "low"} {
+		for base, want := range map[string]string{"claude-opus-5-5": "claude-opus-5-5", "claude-sonnet-5-5": "claude-sonnet-5-5"} {
+			got, err := svc.CalculateCost(base+"-"+tier, tokens, 1)
+			require.NoError(t, err)
+			ref, err := svc.CalculateCost(want, tokens, 1)
+			require.NoError(t, err)
+			require.InDelta(t, ref.TotalCost, got.TotalCost, 1e-12, base+"-"+tier)
+		}
+	}
 }
