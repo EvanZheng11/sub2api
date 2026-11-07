@@ -630,6 +630,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { adminAPI } from '@/api/admin'
@@ -1058,14 +1059,16 @@ function getRuleAccountLabel(accountId: number): string {
   return name ? `${name} #${accountId}` : `#${accountId}`
 }
 
-function handleRuleAccountClickOutside(event: MouseEvent) {
-  const target = event.target as HTMLElement
-  if (!target.closest('.rule-account-search-container')) {
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起规则账号搜索下拉。
+useDropdownDismiss({
+  isOpen: () => Object.values(showRuleAccountDropdown.value).some(Boolean),
+  close: () => {
     Object.keys(showRuleAccountDropdown.value).forEach(key => {
       showRuleAccountDropdown.value[key] = false
     })
-  }
-}
+  },
+  inside: () => Array.from(document.querySelectorAll('.rule-account-search-container'))
+})
 
 function clearAllRuleAccountSearchState() {
   ruleAccountSearchKeyword.value = {}
@@ -1690,13 +1693,11 @@ onMounted(() => {
   loadChannels()
   loadGroups()
   loadWebSearchGlobalState()
-  document.addEventListener('click', handleRuleAccountClickOutside)
 })
 
 onUnmounted(() => {
   clearTimeout(searchTimeout)
   abortController?.abort()
-  document.removeEventListener('click', handleRuleAccountClickOutside)
   ruleAccountSearchRunner.clearAll()
   clearAllRuleAccountSearchState()
 })

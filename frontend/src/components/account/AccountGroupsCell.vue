@@ -83,6 +83,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import GroupBadge from '@/components/common/GroupBadge.vue'
 import type { Group } from '@/types'
 
@@ -150,6 +151,16 @@ const handleKeydown = (e: KeyboardEvent) => {
     showPopover.value = false
   }
 }
+
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起分组 popover。
+// popover 被 Teleport 到 body，需同时传入 +N 按钮与弹层元素。
+useDropdownDismiss({
+  isOpen: showPopover,
+  close: () => {
+    showPopover.value = false
+  },
+  inside: () => [moreButtonRef.value, popoverRef.value]
+})
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)

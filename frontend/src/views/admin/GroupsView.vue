@@ -4267,6 +4267,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { useDropdownDismiss } from "@/composables/useDropdownDismiss";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
 import { useOnboardingStore } from "@/stores/onboarding";
@@ -6821,19 +6822,25 @@ watch(
   }
 )
 
-// 点击外部关闭账号搜索下拉框
-const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as HTMLElement;
-  // 检查是否点击在下拉框或输入框内
-  if (!target.closest(".account-search-container")) {
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起账号搜索下拉与列设置下拉。
+// 两者都渲染在页面内，按既有容器 ref / class 定位内部区域。
+useDropdownDismiss({
+  isOpen: () => Object.values(showAccountDropdown.value).some(Boolean),
+  close: () => {
     Object.keys(showAccountDropdown.value).forEach((key) => {
       showAccountDropdown.value[key] = false;
     });
-  }
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) {
+  },
+  inside: () => Array.from(document.querySelectorAll(".account-search-container")),
+});
+
+useDropdownDismiss({
+  isOpen: showColumnDropdown,
+  close: () => {
     showColumnDropdown.value = false;
-  }
-};
+  },
+  inside: () => [columnDropdownRef.value],
+});
 
 // 打开排序弹窗
 const openSortModal = async () => {
@@ -6885,11 +6892,9 @@ onMounted(() => {
     void loadLiveCapability();
     loadModelAllowlistCandidates("create", 0, createForm.platform);
   }
-  document.addEventListener("click", handleClickOutside);
 });
 
 onUnmounted(() => {
-  document.removeEventListener("click", handleClickOutside);
   accountSearchRunner.clearAll();
   clearAllAccountSearchState();
 });

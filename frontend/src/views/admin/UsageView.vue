@@ -185,6 +185,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { useI18n } from 'vue-i18n'
 import { saveAs } from 'file-saver'
 import { useRoute } from 'vue-router'
@@ -858,11 +859,12 @@ const openError = (id: number) => { selectedErrorId.value = id; showErrorModal.v
 const showColumnDropdown = ref(false)
 const columnDropdownRef = ref<HTMLElement | null>(null)
 
-const handleColumnClickOutside = (event: MouseEvent) => {
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(event.target as HTMLElement)) {
-    showColumnDropdown.value = false
-  }
-}
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起列设置下拉。
+useDropdownDismiss({
+  isOpen: showColumnDropdown,
+  close: () => { showColumnDropdown.value = false },
+  inside: () => [columnDropdownRef.value]
+})
 
 onMounted(() => {
   applyRouteQueryFilters()
@@ -875,9 +877,8 @@ onMounted(() => {
   }, 120)
   loadSavedColumns()
   loadSavedErrColumns()
-  document.addEventListener('click', handleColumnClickOutside)
 })
-onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
+onUnmounted(() => { abortController?.abort(); exportAbortController?.abort() })
 
 watch(modelDistributionSource, (source) => {
   void loadModelStats(source)

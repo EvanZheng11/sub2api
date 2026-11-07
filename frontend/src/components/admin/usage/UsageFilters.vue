@@ -200,6 +200,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, toRef, watch, computed } from 'vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
@@ -462,18 +463,22 @@ const onApiKeyFocus = () => {
   }
 }
 
-const onDocumentClick = (e: MouseEvent) => {
-  const target = e.target as Node | null
-  if (!target) return
-
-  const clickedInsideUser = userSearchRef.value?.contains(target) ?? false
-  const clickedInsideApiKey = apiKeySearchRef.value?.contains(target) ?? false
-  const clickedInsideAccount = accountSearchRef.value?.contains(target) ?? false
-
-  if (!clickedInsideUser) showUserDropdown.value = false
-  if (!clickedInsideApiKey) showApiKeyDropdown.value = false
-  if (!clickedInsideAccount) showAccountDropdown.value = false
-}
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起三个搜索下拉；分别注册以保持各自内部区域语义。
+useDropdownDismiss({
+  isOpen: showUserDropdown,
+  close: () => { showUserDropdown.value = false },
+  inside: () => [userSearchRef.value]
+})
+useDropdownDismiss({
+  isOpen: showApiKeyDropdown,
+  close: () => { showApiKeyDropdown.value = false },
+  inside: () => [apiKeySearchRef.value]
+})
+useDropdownDismiss({
+  isOpen: showAccountDropdown,
+  close: () => { showAccountDropdown.value = false },
+  inside: () => [accountSearchRef.value]
+})
 
 watch(
   () => props.startDate,
@@ -523,7 +528,6 @@ watch(
 )
 
 onMounted(async () => {
-  document.addEventListener('click', onDocumentClick)
   try {
     const gs = await adminAPI.groups.list(1, 1000)
     groupOptions.value.push(...gs.items.map((g: any) => ({ value: g.id, label: g.name })))
@@ -534,7 +538,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   clearPendingUserSearch()
-  document.removeEventListener('click', onDocumentClick)
 })
 
 // 供外部(如用户排行下钻)在程序化设置 user_id 后回显选中的用户邮箱

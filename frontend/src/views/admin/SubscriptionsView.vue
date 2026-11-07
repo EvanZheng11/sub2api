@@ -848,6 +848,7 @@ import type { AdminUser, UserSubscription, Group, GroupPlatform, SubscriptionTyp
 import type { SimpleUser } from '@/api/admin/usage'
 import type { SubscriptionBulkAction, SubscriptionBulkActionResult, BulkAssignSubscriptionResult } from '@/api/admin/subscriptions'
 import { useTableSelection } from '@/composables/useTableSelection'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import BulkSubscriptionActionDialog from '@/components/admin/subscription/BulkSubscriptionActionDialog.vue'
 import type { Column } from '@/components/common/types'
 import { formatDateTimeToMinute } from '@/utils/format'
@@ -1596,26 +1597,32 @@ const formatResetTime = (windowStart: string | null, period: 'daily' | 'weekly' 
   return parts ? formatResetDuration(parts) : t('admin.subscriptions.windowNotActive')
 }
 
-// Handle click outside to close dropdowns
-const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as HTMLElement
-  if (!target.closest('[data-assign-user-search]')) showUserDropdown.value = false
-  if (!target.closest('[data-filter-user-search]')) showFilterUserDropdown.value = false
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) {
-    showColumnDropdown.value = false
-  }
-}
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起本页下拉；分别注册以保持各自的内部区域语义。
+// 两个用户搜索下拉与列设置下拉都渲染在页面内，按既有 data 属性 / ref 定位内部区域。
+useDropdownDismiss({
+  isOpen: showUserDropdown,
+  close: () => { showUserDropdown.value = false },
+  inside: () => Array.from(document.querySelectorAll('[data-assign-user-search]'))
+})
+useDropdownDismiss({
+  isOpen: showFilterUserDropdown,
+  close: () => { showFilterUserDropdown.value = false },
+  inside: () => Array.from(document.querySelectorAll('[data-filter-user-search]'))
+})
+useDropdownDismiss({
+  isOpen: showColumnDropdown,
+  close: () => { showColumnDropdown.value = false },
+  inside: () => [columnDropdownRef.value]
+})
 
 onMounted(() => {
   loadUserColumnMode()
   loadSavedColumns()
   loadSubscriptions()
   loadGroups()
-  document.addEventListener('click', handleClickOutside)
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
   if (filterUserSearchTimeout) {
     clearTimeout(filterUserSearchTimeout)
   }

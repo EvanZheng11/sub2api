@@ -677,6 +677,7 @@
     <Teleport to="body">
       <div
         v-if="activeMenuId !== null && menuPosition"
+        ref="actionMenuRef"
         class="action-menu-content fixed z-[9999] w-48 overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-black/5 dark:bg-dark-800 dark:ring-white/10"
         :style="{ top: menuPosition.top + 'px', left: menuPosition.left + 'px' }"
       >
@@ -797,6 +798,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useTableSelection } from '@/composables/useTableSelection'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 import { formatDateTime } from '@/utils/format'
 import Icon from '@/components/icons/Icon.vue'
 
@@ -1511,29 +1513,34 @@ const closeActionMenu = () => {
   menuPosition.value = null
 }
 
-// Close menu when clicking outside
-const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as HTMLElement
-  if (!target.closest('.action-menu-trigger') && !target.closest('.action-menu-content')) {
-    closeActionMenu()
-  }
-  // Close filter dropdown when clicking outside
-  if (filterDropdownRef.value && !filterDropdownRef.value.contains(target)) {
-    showFilterDropdown.value = false
-  }
-  // Close column dropdown when clicking outside
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) {
-    showColumnDropdown.value = false
-  }
-  // Close usage sort dropdown when clicking outside any usage-sort-trigger
-  if (openUsageSortMenu.value !== null && !target.closest('.usage-sort-trigger')) {
-    openUsageSortMenu.value = null
-  }
-  // Close expanded group dropdown when clicking outside
-  if (expandedGroupUserId.value !== null) {
-    expandedGroupUserId.value = null
-  }
-}
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起对应下拉；逐个注册以保持原有的"打开一个关闭其他"行为。
+// 操作菜单被 Teleport 到 body，需单独持有引用；表格内的排序/分组菜单及操作菜单触发器按既有 class 定位容器。
+const actionMenuRef = ref<HTMLElement | null>(null)
+useDropdownDismiss({
+  isOpen: showFilterDropdown,
+  close: () => { showFilterDropdown.value = false },
+  inside: () => [filterDropdownRef.value]
+})
+useDropdownDismiss({
+  isOpen: showColumnDropdown,
+  close: () => { showColumnDropdown.value = false },
+  inside: () => [columnDropdownRef.value]
+})
+useDropdownDismiss({
+  isOpen: () => openUsageSortMenu.value !== null,
+  close: () => { openUsageSortMenu.value = null },
+  inside: () => Array.from(document.querySelectorAll('.usage-sort-trigger'))
+})
+useDropdownDismiss({
+  isOpen: () => expandedGroupUserId.value !== null,
+  close: () => { expandedGroupUserId.value = null },
+  inside: () => Array.from(document.querySelectorAll('.group\\/ex'))
+})
+useDropdownDismiss({
+  isOpen: () => activeMenuId.value !== null,
+  close: closeActionMenu,
+  inside: () => [actionMenuRef.value, ...Array.from(document.querySelectorAll('.action-menu-trigger'))]
+})
 
 // Allowed groups modal state
 const showAllowedGroupsModal = ref(false)
@@ -1899,12 +1906,10 @@ onMounted(async () => {
   if (visibleFilters.has('apiKeyGroup')) {
     loadAllGroupsForApiKeyFilter()
   }
-  document.addEventListener('click', handleClickOutside)
   window.addEventListener('scroll', handleScroll, true)
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
   window.removeEventListener('scroll', handleScroll, true)
   clearTimeout(searchTimeout)
   abortController?.abort()
