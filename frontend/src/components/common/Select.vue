@@ -122,9 +122,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import { useDropdownDismiss } from '@/composables/useDropdownDismiss'
 
 const { t } = useI18n()
 
@@ -491,23 +492,17 @@ const scrollToFocused = () => {
   })
 }
 
-const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as HTMLElement
-  // Check if click is inside THIS specific instance's dropdown or trigger
-  const isInDropdown = !!target.closest(`.${instanceId}`)
-  const isInTrigger = containerRef.value?.contains(target)
-
-  if (!isInDropdown && !isInTrigger && isOpen.value) {
+// 失去焦点（点击外部、焦点移出、窗口失焦）时收起弹层。
+// 弹层被 Teleport 到 body，因此内部区域同时包含触发器和弹层元素。
+useDropdownDismiss({
+  isOpen,
+  close: () => {
     isOpen.value = false
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
+  },
+  inside: () => [containerRef.value, dropdownRef.value]
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
   window.removeEventListener('scroll', updateTriggerRect, { capture: true })
   window.removeEventListener('resize', calculateDropdownPosition)
   if (remoteSearchTimer) {
