@@ -91,12 +91,15 @@ export default defineConfig(({ mode }) => {
       }),
       injectPublicSettings(backendUrl)
     ],
+  define: {
+    // 兼容 v9 构建：使用 AST JIT，不依赖 CSP 禁止的 new Function；v10+ 默认开启。
+    __INTLIFY_JIT_COMPILATION__: true
+  },
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
-      // 使用 vue-i18n 运行时版本，避免 CSP unsafe-eval 问题；
-      // v10 起 JIT 编译恒开启，消息编译为 AST 对象而非 JS 代码，无需 unsafe-eval
-      'vue-i18n': 'vue-i18n/dist/vue-i18n.runtime.esm-bundler.js'
+      // 语言包是懒加载的原始字符串，必须包含消息编译器，否则占位符会原样显示。
+      'vue-i18n': 'vue-i18n/dist/vue-i18n.esm-bundler.js'
     }
   },
   build: {
