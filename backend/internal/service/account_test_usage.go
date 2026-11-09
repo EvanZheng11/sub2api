@@ -82,7 +82,19 @@ func (b *accountTestBilling) prepare(ctx context.Context) (*User, *APIKey, error
 }
 
 func (b *accountTestBilling) calculate(ctx context.Context, r *accountTestUsageRequest) (*CostBreakdown, error) {
-	return b.pricing.CalculateCostUnified(CostInput{Ctx: ctx, Model: r.model, Tokens: r.tokens, RateMultiplier: 1, ServiceTier: r.tier, ReasoningEffort: r.effort})
+	input := CostInput{Ctx: ctx, Model: r.model, Tokens: r.tokens, RateMultiplier: 1, ServiceTier: r.tier, ReasoningEffort: r.effort}
+	cost, err := b.pricing.CalculateCostUnified(input)
+	if !errors.Is(err, ErrModelPricingUnavailable) {
+		return cost, err
+	}
+	// 聚合供应商的路由前缀不是基础型号；仅在完整名缺价时尝试目录已有的名称解析。
+	// 不改上游请求或日志中的模型名，也不为仍然未知的型号编造价格。
+	canonical := normalizeModelNameForPricing(lastSegment(strings.ToLower(strings.TrimSpace(r.model))))
+	if canonical == "" || canonical == strings.ToLower(strings.TrimSpace(r.model)) {
+		return cost, err
+	}
+	input.Model = canonical
+	return b.pricing.CalculateCostUnified(input)
 }
 
 // 日志插入与余额后扣共用现有 Ent 事务；唯一键命中时不再次扣费。
