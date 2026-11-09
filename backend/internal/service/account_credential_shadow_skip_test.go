@@ -60,7 +60,7 @@ func TestAccountTestServiceSkipsShadow(t *testing.T) {
 		ParentAccountID: &pid,
 	}
 	repo := &shadowSkipTestRepo{account: shadow}
-	svc := &AccountTestService{accountRepo: repo}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo}
 	c := newShadowTestGinCtx()
 
 	err := svc.TestAccountConnection(c, 200, "", "", "")

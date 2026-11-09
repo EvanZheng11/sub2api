@@ -33,7 +33,7 @@ func TestObserveGrokTestResponseClassifiesBodyOnlyQuotaErrors(t *testing.T) {
 	repo := &grokQuotaAccountRepo{mockAccountRepoForPlatform: &mockAccountRepoForPlatform{
 		accountsByID: map[int64]*Account{account.ID: account},
 	}}
-	svc := &AccountTestService{accountRepo: repo}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo}
 
 	resp := &http.Response{
 		StatusCode: http.StatusBadRequest,
@@ -53,7 +53,7 @@ func TestObserveGrokTestResponseDoesNotQuarantineContentPolicy(t *testing.T) {
 	repo := &grokQuotaAccountRepo{mockAccountRepoForPlatform: &mockAccountRepoForPlatform{
 		accountsByID: map[int64]*Account{account.ID: account},
 	}}
-	svc := &AccountTestService{accountRepo: repo}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo}
 	resp := &http.Response{
 		StatusCode: http.StatusForbidden,
 		Header:     make(http.Header),
@@ -69,7 +69,7 @@ func TestObserveGrokTestResponseKeepsEntitlement403Cooldown(t *testing.T) {
 	repo := &grokQuotaAccountRepo{mockAccountRepoForPlatform: &mockAccountRepoForPlatform{
 		accountsByID: map[int64]*Account{account.ID: account},
 	}}
-	svc := &AccountTestService{accountRepo: repo}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo}
 	resp := &http.Response{
 		StatusCode: http.StatusForbidden,
 		Header:     make(http.Header),
@@ -119,7 +119,7 @@ func TestAccountTestService_TestAccountConnection_GrokUsesXAIResponses(t *testin
 				"data: {\"type\":\"response.completed\"}\n\n",
 		)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -172,7 +172,7 @@ func TestAccountTestService_TestAccountConnection_GrokDefaultsEmptyModelTo45(t *
 				"data: {\"type\":\"response.completed\"}\n\n",
 		)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -212,7 +212,7 @@ func TestAccountTestService_Grok429PersistsRateLimitReset(t *testing.T) {
 		Header:     http.Header{"Retry-After": []string{"45"}},
 		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -245,7 +245,7 @@ func TestAccountTestService_Grok429WithoutQuotaHeadersUsesFallback(t *testing.T)
 		StatusCode: http.StatusTooManyRequests,
 		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"quota exhausted"}}`)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo: repo, grokTokenProvider: NewGrokTokenProvider(repo, nil), httpUpstream: upstream,
 	}
 	recorder := httptest.NewRecorder()
@@ -280,7 +280,7 @@ func TestAccountTestService_GrokImageModelUsesImagesGenerations(t *testing.T) {
 			`{"data":[{"b64_json":"QUJD","mime_type":"image/jpeg"}]}`,
 		)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -319,7 +319,7 @@ func TestAccountTestService_GrokWebSearchModeUsesResponsesWebSearchTool(t *testi
 			`{"id":"r1","output":[{"type":"web_search_call","id":"ws1","status":"completed"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Grok is built by xAI."}]}]}`,
 		)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -357,7 +357,7 @@ func TestAccountTestService_GrokTTSIncludesLanguage(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"audio/mpeg"}},
 		Body:       io.NopCloser(strings.NewReader("ID3fakeaudio")),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -397,7 +397,7 @@ func TestAccountTestService_GrokImageEditUsesUploadedImage(t *testing.T) {
 			`{"data":[{"b64_json":"QUJD","mime_type":"image/png"}]}`,
 		)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -434,7 +434,7 @@ func TestAccountTestService_GrokImageEditRejectsTinySource(t *testing.T) {
 		},
 	}
 	repo := &mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      &httpUpstreamRecorder{},
@@ -484,7 +484,7 @@ func TestAccountTestService_GrokExplicitImageModeDefaultsModel(t *testing.T) {
 			`{"data":[{"b64_json":"QUJD","mime_type":"image/jpeg"}]}`,
 		)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -521,7 +521,7 @@ func TestAccountTestService_GrokVideoUpstreamErrorIsNotMaskedAsSuccess(t *testin
 			`{"code":"invalid-argument","error":"bad video request"}`,
 		)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		httpUpstream:      upstream,
@@ -590,7 +590,7 @@ func TestAccountTestService_GrokRealtimeModeDialsWS(t *testing.T) {
 	dialer := &grokRealtimeTestDialer{
 		conn: &grokRealtimeTestConn{msg: []byte(`{"type":"session.created","session":{"id":"sess_1"}}`)},
 	}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		grokWSDialer:      dialer,
@@ -627,7 +627,7 @@ func TestAccountTestService_GrokRealtimeModeDialFailure(t *testing.T) {
 		status: 401,
 		err:    &openAIWSHandshakeError{Body: []byte(`{"error":"unauthorized"}`), Err: errors.New("websocket handshake failed")},
 	}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:       repo,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		grokWSDialer:      dialer,

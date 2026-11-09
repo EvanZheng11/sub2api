@@ -23,7 +23,7 @@ func newTypeSafeAccountTestFixture(t *testing.T, status int, responseBody string
 		requests = append(requests, req)
 		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(responseBody))}, nil
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:  repo,
 		httpUpstream: upstream,
 		cfg:          &config.Config{},

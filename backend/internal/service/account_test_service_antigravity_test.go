@@ -39,7 +39,7 @@ func antigravityPromptTestAccount() *Account {
 }
 
 func antigravityPromptTestService(account *Account, upstream *httpUpstreamRecorder) *AccountTestService {
-	return &AccountTestService{
+	return &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:  &mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}},
 		httpUpstream: upstream,
 		cfg:          reasoningTestConfig(),

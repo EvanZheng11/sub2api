@@ -118,7 +118,7 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 	account := &Account{
 		ID:          89,
 		Platform:    PlatformOpenAI,
@@ -147,7 +147,7 @@ func TestAccountTestService_OpenAIOAuthTestNormalizesGPT56Alias(t *testing.T) {
 `))
 
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, httpUpstream: upstream}
 	account := &Account{
 		ID:          90,
 		Platform:    PlatformOpenAI,
@@ -209,7 +209,7 @@ func TestAccountTestService_OpenAIShadowUsesParentCredentialsAndShadowModel(t *t
 		},
 	}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 
 	err := svc.TestAccountConnection(ctx, shadow.ID, "gpt-5.3-codex-spark", "", "")
 	require.NoError(t, err)
@@ -233,7 +233,7 @@ func TestAccountTestService_OpenAIStreamEOFBeforeCompletedFails(t *testing.T) {
 `))
 
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, httpUpstream: upstream}
 	account := &Account{
 		ID:          90,
 		Platform:    PlatformOpenAI,
@@ -257,7 +257,7 @@ func TestAccountTestService_DeepSeekCustomBaseURLUsesV1ResponsesPath(t *testing.
 
 `))
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
@@ -291,7 +291,7 @@ func TestAccountTestService_DeepSeekResponsesRoutesToOpenAIProbe(t *testing.T) {
 
 `))
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
@@ -331,7 +331,7 @@ func TestAccountTestService_DeepSeekDefaultBaseURLUsesNativeResponsesPath(t *tes
 
 `))
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
@@ -369,7 +369,7 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimitState(t *testin
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 	account := &Account{
 		ID:          88,
 		Platform:    PlatformOpenAI,
@@ -399,7 +399,7 @@ func TestAccountTestService_OpenAI429BodyOnlyPersistsRateLimitAndClearsStaleErro
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 	account := &Account{
 		ID:           77,
 		Platform:     PlatformOpenAI,
@@ -429,7 +429,7 @@ func TestAccountTestService_OpenAI429SyncsObservedPlanType(t *testing.T) {
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 	account := &Account{
 		ID:          81,
 		Platform:    PlatformOpenAI,
@@ -456,7 +456,7 @@ func TestAccountTestService_OpenAI429ActiveAccountDoesNotClearError(t *testing.T
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 	account := &Account{
 		ID:          78,
 		Platform:    PlatformOpenAI,
@@ -483,7 +483,7 @@ func TestAccountTestService_OpenAI429WithoutResetSignalDoesNotMutateRuntimeState
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 	account := &Account{
 		ID:           79,
 		Platform:     PlatformOpenAI,
@@ -512,7 +512,7 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{}, accountRepo: repo, httpUpstream: upstream}
 	account := &Account{
 		ID:          80,
 		Platform:    PlatformOpenAI,
@@ -538,7 +538,7 @@ func TestAccountTestService_OpenAIAPIKeyResponsesUsesCodexProbeHeaders(t *testin
 	resp := newJSONResponse(http.StatusOK, "")
 	resp.Body = io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\"}\n\n"))
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
@@ -579,7 +579,7 @@ func TestAccountTestService_OpenAIAPIKeyResponsesUnsupportedUsesChatCompletionsP
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
@@ -618,7 +618,7 @@ func TestAccountTestService_OpenAIChatCompletionsPathReturns4xx(t *testing.T) {
 	ctx, recorder := newTestContext()
 
 	upstream := &httpUpstreamRecorder{resp: newJSONResponse(http.StatusBadRequest, `{"error":{"message":"bad request"}}`)}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
@@ -647,7 +647,7 @@ func TestAccountTestService_OpenAIChatCompletionsPathTimeout(t *testing.T) {
 	ctx, recorder := newTestContext()
 
 	upstream := &httpUpstreamRecorder{err: context.DeadlineExceeded}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}
@@ -681,7 +681,7 @@ func TestAccountTestService_OpenAIChatCompletionsPathRejectsNonJSONStream(t *tes
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:       io.NopCloser(strings.NewReader("data: not-json\n\n")),
 	}}
-	svc := &AccountTestService{
+	svc := &AccountTestService{testBilling: &accountTestBillingStub{},
 		httpUpstream: upstream,
 		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
 	}

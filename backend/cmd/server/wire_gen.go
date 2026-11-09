@@ -217,7 +217,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	testQuestionService := service.NewTestQuestionService(testQuestionRepository, testRecordService)
 	testQuestionHandler := admin.NewTestQuestionHandler(testQuestionService)
 	testRecordHandler := admin.NewTestRecordHandler(testRecordService)
-	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager, testQuestionService, testRecordService)
+	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager, testQuestionService, testRecordService, userRepository, apiKeyRepository, usageLogRepository, client, billingService, billingCacheService)
 	crsSyncService := service.NewCRSSyncService(accountRepository, proxyRepository, oAuthService, openAIOAuthService, geminiOAuthService, configConfig)
 	accountHandler := admin.ProvideAccountHandler(configConfig, adminService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, rateLimitService, accountUsageService, accountTestService, concurrencyService, crsSyncService, sessionLimitCache, rpmCache, compositeTokenCacheInvalidator, grokQuotaService)
 	adminAnnouncementHandler := admin.NewAnnouncementHandler(announcementService)

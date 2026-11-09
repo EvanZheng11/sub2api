@@ -26,14 +26,17 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 	account *Account,
 	useTLSFallback bool,
 ) (*http.Response, error) {
+	if err := validateAccountTestUsageRequest(request); err != nil {
+		return nil, err
+	}
 	if s.pluginManager != nil {
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
 		if handled {
-			return response, err
+			return observeAccountTestResponse(request, response), err
 		}
 	}
 	if useTLSFallback {
-		return s.httpUpstream.DoWithTLS(
+		return accountTestUsageUpstream{s.httpUpstream}.DoWithTLS(
 			request,
 			proxyURL,
 			account.ID,
@@ -41,5 +44,5 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 			s.tlsFPProfileService.ResolveTLSProfile(account),
 		)
 	}
-	return s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
+	return accountTestUsageUpstream{s.httpUpstream}.Do(request, proxyURL, account.ID, account.Concurrency)
 }

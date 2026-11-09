@@ -270,6 +270,12 @@ func ProvideAccountTestService(
 	pluginManager *PluginManager,
 	testQuestions TestQuestionLookup,
 	testRecordWriter TestRecordWriter,
+	userRepo UserRepository,
+	apiKeyRepo APIKeyRepository,
+	usageLogRepo UsageLogRepository,
+	entClient *dbent.Client,
+	billingService *BillingService,
+	billingCacheService *BillingCacheService,
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
@@ -283,6 +289,7 @@ func ProvideAccountTestService(
 		testQuestions,
 		testRecordWriter,
 	)
+	service.testBilling = &accountTestBilling{users: userRepo, keys: apiKeyRepo, logs: usageLogRepo, client: entClient, pricing: billingService, cache: billingCacheService}
 	service.agentIdentityWS = openAIGatewayService
 	service.SetOpenAIGatewayService(openAIGatewayService)
 	service.SetSettingService(settingService)

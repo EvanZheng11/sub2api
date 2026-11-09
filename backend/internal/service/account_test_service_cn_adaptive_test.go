@@ -39,7 +39,7 @@ func adaptiveCNAccountTestService(account *Account, responses ...*http.Response)
 		},
 	}
 	upstream := &httpUpstreamRecorder{responses: responses}
-	return &AccountTestService{
+	return &AccountTestService{testBilling: &accountTestBillingStub{},
 		accountRepo:  repo,
 		httpUpstream: upstream,
 		cfg:          rawChatCompletionsTestConfig(),
