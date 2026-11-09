@@ -153,6 +153,7 @@ func (s *accountTestUsageSession) finish(ctx context.Context) error {
 		log := &UsageLog{UserID: s.admin.ID, APIKeyID: s.key.ID, AccountID: s.account.ID, RequestID: r.id, Model: r.model,
 			InputTokens: r.tokens.InputTokens, OutputTokens: r.tokens.OutputTokens, CacheReadTokens: r.tokens.CacheReadTokens,
 			CacheCreationTokens: r.tokens.CacheCreationTokens, CacheCreation5mTokens: r.tokens.CacheCreation5mTokens, CacheCreation1hTokens: r.tokens.CacheCreation1hTokens,
+			CacheCreation30mTokens: r.tokens.CacheCreation30mTokens, CacheCreation12hTokens: r.tokens.CacheCreation12hTokens,
 			ImageInputTokens: r.tokens.ImageInputTokens, ImageOutputTokens: r.tokens.ImageOutputTokens,
 			InputCost: cost.InputCost, OutputCost: cost.OutputCost, CacheReadCost: cost.CacheReadCost, CacheCreationCost: cost.CacheCreationCost,
 			ImageInputCost: cost.ImageInputCost, ImageOutputCost: cost.ImageOutputCost, TotalCost: QuantizeUsageBillingAmount(cost.TotalCost), ActualCost: QuantizeUsageBillingAmount(cost.ActualCost),
@@ -425,12 +426,14 @@ func (r *accountTestUsageRequest) observe(root gjson.Result) {
 	set(&r.tokens.CacheCreation5mTokens, "cache_creation.ephemeral_5m_input_tokens")
 	set(&r.tokens.CacheCreation1hTokens, "cache_creation.ephemeral_1h_input_tokens")
 	set(&r.tokens.CacheReadTokens, "cache_read_input_tokens")
-	if u.Get("prompt_tokens").Exists() || u.Get("input_tokens_details").Exists() || u.Get("prompt_cache_hit_tokens").Exists() {
-		r.tokens.CacheReadTokens = 0
-		set(&r.tokens.CacheReadTokens, "prompt_tokens_details.cached_tokens")
-		set(&r.tokens.CacheReadTokens, "input_tokens_details.cached_tokens")
-		set(&r.tokens.CacheReadTokens, "prompt_cache_hit_tokens")
-		r.tokens.InputTokens = max(0, r.tokens.InputTokens-r.tokens.CacheReadTokens)
+	if u.Get("prompt_tokens").Exists() || u.Get("input_tokens_details").Exists() || u.Get("prompt_cache_hit_tokens").Exists() || u.Get("cache_write_tokens").Exists() || u.Get("cache_write_input_tokens").Exists() {
+		// OpenAI 的输入总量包含缓存读写，复用网关的聚合与 TTL 校验，避免重复计费。
+		usage, _ := openAIUsageFromGJSON(u)
+		r.tokens.CacheReadTokens = usage.CacheReadInputTokens
+		r.tokens.CacheCreationTokens = usage.CacheCreationInputTokens
+		r.tokens.CacheCreation30mTokens = usage.CacheCreation30mInputTokens
+		r.tokens.CacheCreation12hTokens = usage.CacheCreation12hInputTokens
+		r.tokens.InputTokens = max(0, r.rawInput-r.tokens.CacheReadTokens-r.tokens.CacheCreationTokens)
 	}
 	set(&r.tokens.ImageOutputTokens, "output_tokens_details.image_tokens")
 	set(&r.tokens.ImageInputTokens, "input_tokens_details.image_tokens")
