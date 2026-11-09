@@ -17,6 +17,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestAccountTestUsageCapture(t *testing.T) {
@@ -47,6 +48,40 @@ func TestAccountTestUsageCapture(t *testing.T) {
 			require.Equal(t, tc.want, r.tokens)
 		})
 	}
+}
+
+func TestAccountTestUsageReviewRegressions(t *testing.T) {
+	t.Run("Anthropic delta zero preserves start", func(t *testing.T) {
+		r := &accountTestUsageRequest{}
+		r.observe(gjson.Parse(`{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":4,"cache_creation_input_tokens":3}}}`))
+		r.observe(gjson.Parse(`{"type":"message_delta","usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":5}}`))
+		require.Equal(t, 10, r.tokens.InputTokens)
+		require.Equal(t, 4, r.tokens.CacheReadTokens)
+		require.Equal(t, 3, r.tokens.CacheCreationTokens)
+		require.Equal(t, 5, r.tokens.OutputTokens)
+	})
+	t.Run("Images output classification", func(t *testing.T) {
+		r := &accountTestUsageRequest{endpoint: "/v1/images/generations"}
+		r.observe(gjson.Parse(`{"usage":{"input_tokens":10,"output_tokens":100}}`))
+		require.Equal(t, 100, r.tokens.ImageOutputTokens)
+		r.observe(gjson.Parse(`{"usage":{"output_tokens":100,"output_tokens_details":{"image_tokens":80}}}`))
+		require.Equal(t, 80, r.tokens.ImageOutputTokens)
+	})
+	t.Run("Gemini image classification", func(t *testing.T) {
+		r := &accountTestUsageRequest{}
+		r.observe(gjson.Parse(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":120,"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":20},{"modality":"IMAGE","tokenCount":100}]}}`))
+		require.Equal(t, 120, r.tokens.OutputTokens)
+		require.Equal(t, 100, r.tokens.ImageOutputTokens)
+	})
+	t.Run("Grok media retains unpriced probes", func(t *testing.T) {
+		session := &accountTestUsageSession{account: &Account{Platform: PlatformGrok}, billing: &accountTestBillingStub{pricing: NewBillingService(nil, nil)}}
+		for _, path := range []string{"images/generations", "videos/generations", "tts", "stt"} {
+			req, err := http.NewRequestWithContext(context.WithValue(context.Background(), accountTestUsageContextKey{}, session), http.MethodPost, "https://mock.invalid/v1/"+path, strings.NewReader(`{"model":"unpriced-media-model"}`))
+			require.NoError(t, err)
+			require.NoError(t, validateAccountTestUsageRequest(req))
+			require.False(t, accountTestRequestUsesTokenBilling(req, session))
+		}
+	})
 }
 
 func TestAccountTestUsageRequestsAndAdminAttribution(t *testing.T) {

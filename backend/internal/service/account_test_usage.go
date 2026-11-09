@@ -186,6 +186,9 @@ func observeAccountTestResponse(req *http.Request, resp *http.Response) *http.Re
 	if session == nil || resp == nil || resp.Body == nil {
 		return resp
 	}
+	if !accountTestRequestUsesTokenBilling(req, session) {
+		return resp
+	}
 	r := accountTestUsageRequestFromHTTP(req)
 	// 视频状态轮询返回同一生成任务的累计 usage，不是新的模型消耗。
 	if req.Method == http.MethodGet {
@@ -213,7 +216,7 @@ func observeAccountTestResponse(req *http.Request, resp *http.Response) *http.Re
 
 func validateAccountTestUsageRequest(req *http.Request) error {
 	session, _ := req.Context().Value(accountTestUsageContextKey{}).(*accountTestUsageSession)
-	if session == nil || req.Method != http.MethodPost {
+	if session == nil || req.Method != http.MethodPost || !accountTestRequestUsesTokenBilling(req, session) {
 		return nil
 	}
 	r := accountTestUsageRequestFromHTTP(req)
@@ -224,6 +227,16 @@ func validateAccountTestUsageRequest(req *http.Request) error {
 		return fmt.Errorf("测试模型 %s 无法计价，已停止调用上游: %w", r.model, err)
 	}
 	return nil
+}
+
+// Grok 媒体按时长、字符或张数计费，不拿文本 token 单价拦截原有测试。
+func accountTestRequestUsesTokenBilling(req *http.Request, session *accountTestUsageSession) bool {
+	if session.account == nil || session.account.Platform != PlatformGrok {
+		return true
+	}
+	path := req.URL.Path
+	return !strings.Contains(path, "/images/") && !strings.Contains(path, "/videos/") &&
+		!strings.HasSuffix(path, "/tts") && !strings.HasSuffix(path, "/stt")
 }
 
 func accountTestUsageRequestFromHTTP(req *http.Request) *accountTestUsageRequest {
@@ -376,6 +389,10 @@ func (r *accountTestUsageRequest) observe(root gjson.Result) {
 	}
 	set := func(dst *int, key string) {
 		if v := u.Get(key); v.Exists() && v.Type == gjson.Number && v.Int() >= 0 {
+			// 兼容 Anthropic 的 delta 常用 0 表示本帧未更新，不能清掉 start 的累计用量。
+			if root.Get("type").String() == "message_delta" && v.Int() == 0 && *dst > 0 {
+				return
+			}
 			*dst = int(v.Int())
 			r.seen = true
 		}
@@ -387,6 +404,15 @@ func (r *accountTestUsageRequest) observe(root gjson.Result) {
 		set(&r.rawThoughts, "thoughtsTokenCount")
 		r.tokens.OutputTokens = r.rawCandidates + r.rawThoughts
 		r.tokens.InputTokens = max(0, r.rawInput-r.tokens.CacheReadTokens)
+		if details := u.Get("candidatesTokensDetails"); details.IsArray() {
+			r.tokens.ImageOutputTokens = 0
+			for i, detail := range details.Array() {
+				if detail.Get("modality").String() == "IMAGE" {
+					set(&r.tokens.ImageOutputTokens, fmt.Sprintf("candidatesTokensDetails.%d.tokenCount", i))
+					break
+				}
+			}
+		}
 		return
 	}
 	// Anthropic message_delta 只携带累计 output，未提供的 input/cache 保留先前快照。
@@ -408,4 +434,8 @@ func (r *accountTestUsageRequest) observe(root gjson.Result) {
 	}
 	set(&r.tokens.ImageOutputTokens, "output_tokens_details.image_tokens")
 	set(&r.tokens.ImageInputTokens, "input_tokens_details.image_tokens")
+	if strings.Contains(r.endpoint, "/images/") && !u.Get("output_tokens_details.image_tokens").Exists() {
+		// 原生 Images 端点没有文本输出，沿用网关的图片 token 回退口径。
+		r.tokens.ImageOutputTokens = r.tokens.OutputTokens
+	}
 }
